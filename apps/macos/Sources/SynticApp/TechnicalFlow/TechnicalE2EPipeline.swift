@@ -5,6 +5,8 @@ import Foundation
 final class TechnicalE2EPipeline: ObservableObject {
     @Published private(set) var phase = "idle"
     @Published private(set) var isHotkeyListening = false
+    @Published private(set) var hotkeyDefinition = "-"
+    @Published private(set) var hotkeyStatusSummary = "not_started"
     @Published private(set) var latestAudioLevel: Float = 0
     @Published private(set) var latestRouteJSON = "{}"
     @Published private(set) var latestTranscript = ""
@@ -81,6 +83,7 @@ final class TechnicalE2EPipeline: ObservableObject {
         self.telemetryLogger = telemetryLogger
         self.coreFeedProjector = coreFeedProjector
 
+        hotkeyDefinition = hotkeyAdapter.supportedHotkeysDescription
         dictationStateJSON = coreBridge.dictationStateJSON()
         telemetryLogPath = telemetryLogger.logFilePath
         coreFeedProjectionPath = coreFeedProjector.logFilePath
@@ -133,6 +136,7 @@ final class TechnicalE2EPipeline: ObservableObject {
         if isHotkeyListening {
             hotkeyAdapter.stopListening()
             isHotkeyListening = false
+            hotkeyStatusSummary = "stopped"
             emitTelemetry(category: "hotkey", action: "listener_stopped", status: "ok", context: [:])
             appendLog("Hotkey listener stopped.")
             return
@@ -146,23 +150,33 @@ final class TechnicalE2EPipeline: ObservableObject {
             return
         }
 
-        hotkeyAdapter.startListening { [weak self] in
+        let startResult = hotkeyAdapter.startListening { [weak self] in
             Task { @MainActor [weak self] in
                 self?.handleHotkeyTrigger(source: "hotkey")
             }
         }
 
-        isHotkeyListening = true
+        isHotkeyListening = startResult.started
+        hotkeyStatusSummary = startResult.statusSummary
+        let listenerStatus = startResult.hasGlobalMonitor ? "ok" : "degraded"
         emitTelemetry(
             category: "hotkey",
             action: "listener_started",
-            status: "ok",
+            status: listenerStatus,
             context: [
-                "definition": "option_space",
+                "definition": startResult.hotkeySummary,
                 "start_source": startSource,
+                "global_monitor": startResult.hasGlobalMonitor ? "on" : "off",
+                "local_monitor": startResult.hasLocalMonitor ? "on" : "off",
+                "accessibility_trusted": startResult.accessibilityTrusted ? "true" : "false",
+                "accessibility_prompted": startResult.promptedAccessibility ? "true" : "false",
             ]
         )
-        appendLog("Hotkey listener started (Option+Space), source=\(startSource).")
+        appendLog("Hotkey listener start: \(startResult.statusSummary), source=\(startSource).")
+
+        if !startResult.hasGlobalMonitor {
+            appendLog("Global hotkey capture unavailable. Check macOS permissions for Accessibility and Input Monitoring.")
+        }
     }
 
     func triggerHotkeyAction() {

@@ -631,10 +631,21 @@ private final class FakeAudioCaptureAdapter: AudioCapturing {
 
 private final class NoopHotkeyAdapter: HotkeyListening {
     var isListening: Bool = false
+    var supportedHotkeysDescription: String {
+        "Option+Space / Option+Backspace"
+    }
 
-    func startListening(onTrigger: @escaping () -> Void) {
+    func startListening(onTrigger: @escaping () -> Void) -> HotkeyListenerStartResult {
         _ = onTrigger
         isListening = true
+        return HotkeyListenerStartResult(
+            started: true,
+            hasGlobalMonitor: true,
+            hasLocalMonitor: true,
+            accessibilityTrusted: true,
+            promptedAccessibility: false,
+            hotkeyLabels: ["Option+Space", "Option+Backspace"]
+        )
     }
 
     func stopListening() {

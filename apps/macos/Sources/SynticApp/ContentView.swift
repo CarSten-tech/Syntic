@@ -133,6 +133,13 @@ struct ContentView: View {
             Text("Technical E2E: Hotkey -> Audio -> Routing -> Review -> Tool Runtime -> Injection")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            Text("Hotkey: \(technicalE2EPipeline.hotkeyDefinition)")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            Text("Hotkey status: \(technicalE2EPipeline.hotkeyStatusSummary)")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
 
             HStack {
                 Toggle("Network verfügbar", isOn: $technicalE2EPipeline.networkAvailable)
