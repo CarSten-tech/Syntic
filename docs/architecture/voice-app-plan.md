@@ -783,3 +783,172 @@ Drittanbieter-Plugin (Phase 2) beansprucht mehr Permissions als deklariert oder 
 **Enterprise Policy Lock:**
 - Enterprise-Administratoren können Sensitive Mode per Konfigurationsprofil (macOS: MDM-Profil) erzwingen.
 - Wenn via Policy erzwungen: Toggle ist in UI ausgegraut, Erklärung "Durch Unternehmensrichtlinie aktiviert" sichtbar. Nutzer kann nicht deaktivieren.
+
+---
+
+## 7. UX & Design Anforderungen
+
+---
+
+### Definition: "Modern, aufgeräumt, freundlich"
+
+Diese drei Adjektive sind keine Ästhetik-Wünsche, sondern operative Anforderungen:
+
+- **Modern** bedeutet: keine visuellen Schulden. Konsistente Abstände, klare Typographie-Hierarchie, keine veralteten UI-Muster (keine Einstellungs-Dialoge aus dem Jahr 2008, keine Icon-overloaded Toolbars). Benchmark: Raycast, Linear, Notion — nicht weil sie kopiert werden, sondern weil sie zeigen, was professionelle macOS-UX 2026 bedeutet.
+- **Aufgeräumt** bedeutet: nichts ist sichtbar, was gerade nicht gebraucht wird. Die App verschwindet, wenn sie nicht aktiv ist. Wenn sie aktiv ist, zeigt sie genau das, was jetzt relevant ist — nicht mehr. Kein Feature-Showcasing im Idle-Zustand.
+- **Freundlich** bedeutet: Fehler sind keine Sackgassen. Permission-Anfragen fühlen sich nicht wie Verhöre an. Onboarding erklärt ohne zu belehren. Tone of Voice ist direkt, klar, ohne Marketing-Sprache. Kein "Powered by AI"-Unsinn.
+
+Die App spricht den Nutzer nicht an wie ein Assistent, der beeindrucken will. Sie verhält sich wie ein Werkzeug, das einfach funktioniert.
+
+---
+
+### Design Token System
+
+Alle visuellen Werte sind ausschließlich über Token-Referenzen zu verwenden. Kein einziger hardcodierter Hex-Wert, kein Ad-hoc `padding: 7px` irgendwo im Code.
+
+**Farb-Tokens (Semantic Layer — kein direktes RGB):**
+- `color-background-primary` — Haupt-Hintergrundfläche (Dark Mode / Light Mode via System-API)
+- `color-background-secondary` — Eingerückte oder abgegrenzte Bereiche
+- `color-surface-elevated` — Overlays, Popovers, Palette
+- `color-text-primary` — Primärtext
+- `color-text-secondary` — Beschriftungen, Hints, deemphasized Content
+- `color-text-disabled` — Inaktive Elemente
+- `color-accent-primary` — Interaktive Hauptelemente (Buttons, aktive States)
+- `color-accent-hover` — Hover-State des Akzents
+- `color-accent-subtle` — Hintergrund für ausgewählte oder aktive Rows
+- `color-semantic-danger` — Destruktive Aktionen, Fehler
+- `color-semantic-warning` — Warnungen, degradierte Zustände
+- `color-semantic-success` — Erfolgsbestätigungen
+- `color-semantic-info` — Neutrale Hinweise
+- `color-border-default` — Standard-Trennlinien
+- `color-border-strong` — Deutlich sichtbare Abgrenzungen
+
+Jeder Token existiert in zwei Varianten: Light und Dark. Wechsel erfolgt automatisch via `NSAppearance` auf macOS.
+WCAG AA ist Minimum: Text auf Hintergrund mindestens 4.5:1, große Texte 3:1.
+
+**Spacing-Scale (8px-Basis):**
+`4 · 8 · 12 · 16 · 24 · 32 · 48 · 64 · 96 · 128`
+Mikro-Abstände (4px) nur für Icon-zu-Label-Abstände oder interne Padding-Anpassungen. Alle Layout-Abstände auf der 8px-Skala.
+
+**Typography-Scale (macOS-basiert, System Font SF Pro):**
+- `text-xs`: 11pt — Captions, Timestamps, Metadaten
+- `text-sm`: 13pt — Sekundärer Content, Labels (macOS Standard-Schriftgröße)
+- `text-base`: 15pt — Primärer Content, Input-Felder
+- `text-lg`: 17pt — Abschnitts-Überschriften
+- `text-xl`: 20pt — Panel-Titel, prominente Labels
+- `text-2xl`: 24pt — Haupttitel in Onboarding oder leeren Zuständen
+Keine Schriftgröße unter 11pt. Line Heights: `text-xs` bis `text-sm` → 1.3, `text-base` und größer → 1.5.
+Font Weight via Token: `weight-regular` (400), `weight-medium` (500), `weight-semibold` (600). Kein `weight-bold` (700) außer in absoluten Ausnahmefällen.
+
+**Radius-Scale:**
+`2 · 4 · 6 · 8 · 12 · 16 · 24 · full`
+Palette und Overlays: `radius-12`. Buttons: `radius-6`. Input-Felder: `radius-6`. Tags/Chips: `radius-full`.
+
+**Shadow/Elevation-Scale:**
+- `shadow-none` — Flat-Elemente
+- `shadow-sm` — Leicht angehobene Karten
+- `shadow-md` — Popovers, Menu Bar Fenster
+- `shadow-lg` — Command Palette, Overlays
+- `shadow-xl` — Modale Dialoge (selten)
+
+**Transition-Scale:**
+`75ms · 100ms · 150ms · 200ms · 300ms`
+Easing: `ease-out` für Einblenden, `ease-in` für Ausblenden, `ease-in-out` für Positions-Änderungen.
+`prefers-reduced-motion`: alle Animationen werden auf sofortige Zustandswechsel reduziert, kein Fallback auf langsamere Animationen.
+
+---
+
+### Verpflichtende UI-Zustände
+
+Jede Komponente, die dynamischen Inhalt anzeigt, muss alle anwendbaren Zustände implementieren. Ein Zustand ohne visuelle Behandlung ist ein Bug.
+
+**Loading:** Skeleton-Loader (nicht Spinner) für Content-Areas — Content-Layout wird in gedämpfter Platzhalterform angedeutet, damit kein Layout-Shift beim Laden entsteht. Spinner nur für Aktionen (Button-Submit, kurze Operationen < 500ms).
+
+**Empty:** Informativer leerer Zustand mit kontextuellem Hinweis ("Noch keine Befehle — drücke ⌘⌥Space um zu starten"). Kein blank weißes Panel. Kein generischer "No data"-Text.
+
+**Error:** Inline und präzise — nicht in einem Modal. Fehlermeldung beschreibt was passiert ist und bietet eine Handlungsmöglichkeit (Retry, Settings öffnen, Feedback senden). Stack Traces nie sichtbar für den Nutzer.
+
+**Success:** Kurz und nicht-blockierend. Toast-Notification (3 Sekunden Auto-Dismiss für Erfolge, persistent für Fehler). Kein Erfolgs-Modal für Standard-Operationen.
+
+**Disabled:** Visuell klar deemphasized (`color-text-disabled`), nie einfach opacity-reduced. Tooltip erklärt warum deaktiviert, wenn nicht offensichtlich.
+
+**Processing / In Progress:** Wenn eine Aktion läuft (STT, LLM-Call, File-Op): visueller Indicator im ausgelösten Element. Button wird disabled während der Operation, zeigt Spinner. Palette zeigt Fortschritt inline.
+
+---
+
+### Keyboard-first & Accessibility
+
+**Keyboard-Navigation:**
+- Jede interaktive Fläche ist per Tab erreichbar — Tab-Reihenfolge ist logisch (entspricht visuellem Flow).
+- Focus Ring ist immer sichtbar und entspricht dem Akzent-Token — kein `outline: none` ohne Ersatz.
+- Command Palette: vollständige Bedienung ohne Maus. `↑↓` navigieren Ergebnisse, `Enter` bestätigt, `Escape` schließt, `Tab` wechselt Kontext.
+- Hotkeys sind durchgehend dokumentiert und in der UI sichtbar (wo sinnvoll als Keyboard-Shortcut-Badge).
+
+**Accessibility (WCAG AA Minimum):**
+- Alle interaktiven Elemente haben `accessibilityLabel` und `accessibilityRole` (macOS: über SwiftUI `.accessibilityLabel()`, `.accessibilityAddTraits()`).
+- Dynamische Änderungen werden via `accessibilityAnnouncement` oder Live Regions angekündigt (z. B. "Transkription abgeschlossen", "3 Dateien verschoben").
+- Focus Management bei Overlay-Öffnung: Fokus springt in das Overlay. Bei Schließen: Fokus kehrt zum auslösenden Element zurück.
+- Mikrofon-Status und Sensitive-Mode-Indikator sind nicht nur farblich kommuniziert — immer zusätzlich per Text oder Icon-Label.
+- Mindest-Touch-Target: 44×44pt (relevant für iOS/iPad, Konvention auf macOS wo angemessen).
+- VoiceOver-Testing ist Teil des MVP-Akzeptanzkriteriums für macOS.
+
+---
+
+### Konsistenzregeln
+
+- Keine Ad-hoc Styles außerhalb des Token-Systems. Eine Pull-Request-Review-Regel: jeder hardcodierte visuelle Wert ist ein Blocking-Comment.
+- Komponenten werden einmal gebaut und wiederverwendet — kein duplizierter UI-Code. Eine Button-Variante, nicht vier leicht unterschiedliche.
+- Icon-Set: einheitlich (SF Symbols auf macOS/iOS — plattformkonform und automatisch dark-mode-fähig). Kein Mischen von Icon-Sets.
+- Sprache in der UI: einheitlicher Ton. Imperative für Aktionen ("Verschieben", "Timer setzen"), nicht Gerundien ("Verschieben von…"). Keine Ellipsis in Button-Beschriftungen außer bei wirklich mehrstufigen Dialogen.
+- Lokalisierung: alle Strings in externen Lokalisierungsdateien — kein hardcodierter String in View-Code. ICU-Format für Plurale und Interpolationen. Textfelder dimensioniert für 40% längere Strings (DE, FI, etc.).
+
+---
+
+### macOS-spezifische UI-Pattern
+
+**Menu Bar Icon:**
+- Monochrom, Template-Image (passt sich automatisch an Light/Dark/Tinted Menu Bar an).
+- Zeigt aktuellen Zustand durch subtile Varianten: Idle (Standard-Icon), Listening (animierte Punkte oder Welle), Processing (kleiner Spinner), Sensitive Mode (Schloss-Overlay oder separates Icon).
+- Kein farbiges Icon im Idle-Zustand — widerspricht macOS Human Interface Guidelines für Menu Bar Items.
+- Klick öffnet Popover (nicht Dropdown-Menü) — Popover erlaubt reichhaltigere UI (History, Status, Schnellaktionen).
+
+**Command Palette:**
+- NSPanel, non-activating, Spotlight-Proportionen: ca. 680–720pt breit, Höhe dynamisch basierend auf Inhalt.
+- Erscheint zentriert horizontal, im oberen Bildschirmviertel — gleiche Position wie Spotlight.
+- Inhalt: Eingabefeld (groß, prominentes Placeholder-Text), darunter Kontext-Badge wenn Finder-Selektion aktiv ("3 Dateien"), darunter Live-Transkription oder Ergebnis, darunter Confirmation oder Ergebnis-Actions.
+- Backdrop: leicht satiniertes Material (`NSVisualEffectView` mit `.hudWindow`-Material) — entspricht macOS-Systemkonventionen für schwebende Panels.
+- Kein Drag-Griff, kein Titel, kein Schließen-Button — Escape ist der einzige Exit-Weg. Klick außerhalb schließt ebenfalls.
+
+**Dictation Indicator:**
+- Minimales, schwebendes Widget — ca. 200pt breit, 40pt hoch.
+- Zeigt: aktive Wellenform-Animation (Mikrofon aktiv), Live-Transkription-Text (scrollend), Status (Listening / Processing).
+- Erscheinungsposition: konfigurierbar (nahe Cursor, Bildschirm-Rand unten-mitte, Bildschirm-Rand oben).
+- Verschwindet automatisch nach Injection. Kein manuelles Schließen nötig.
+
+**Settings-Fenster:**
+- Reguläres NSWindow, folgt macOS Settings-Konventionen: vertikale Kategorie-Navigation links, Content rechts.
+- Kategorien: Allgemein, Diktat, Befehle, KI-Provider, Datenschutz, Über.
+- Jede Einstellung speichert sofort (kein "Übernehmen"-Button) mit inline Feedback bei Änderung.
+- Destruktive Aktionen (Daten löschen, Key entfernen) mit Confirmation-Dialog und deutlicher Danger-Färbung.
+
+---
+
+### Onboarding: Permissions & Keys
+
+Onboarding muss Vertrauen aufbauen, nicht erschöpfen. Jeder Schritt kommuniziert klar, was er von dem Nutzer braucht und warum — und was passiert, wenn der Nutzer es nicht erteilt.
+
+**Gestaltungsprinzipien für Onboarding:**
+- Ein Fokus pro Schritt. Kein Schritt hat mehr als eine Entscheidung.
+- Erklärungen sind konkret, nicht allgemein: "Mikrofon-Zugriff erlaubt der App, deine Sprache zu hören, während du den Diktat-Hotkey gedrückt hältst." Nicht: "Wir brauchen Mikrofon-Zugriff für Sprachfunktionen."
+- Datenschutzversprechen werden direkt im Permission-Schritt gemacht, nicht in einem separaten Datenschutz-Link: "Audio wird nicht gespeichert. Es verlässt das Gerät nur wenn du Cloud-STT aktiviert hast."
+- Jeder Schritt hat eine "Überspringen"-Option (außer Mikrofon, ohne das kein Feature funktioniert), mit klarer Kommunikation der Konsequenz.
+- Fortschritt wird angezeigt (Schritt 2 von 6) — Nutzer weiß immer, wie viel noch kommt.
+- Nach Onboarding: kein "Jetzt loslegen"-Screen-Dump. Die App ist einfach bereit. Menu Bar Icon erscheint.
+
+**Schritt-Struktur:**
+- Schritt 1 — Willkommen: eine Headline, zwei Sätze Value Prop, ein Call-to-Action "Einrichten".
+- Schritt 2 — Mikrofon: Erklärung + Datenschutz-Statement + Permission-Button → macOS-Dialog erscheint.
+- Schritt 3 — Hotkeys: Diktat-Hotkey und Command-Hotkey konfigurieren. Standard-Vorschlag vorausgefüllt. Live-Preview: "Wenn du ⌥Space drückst, passiert…"
+- Schritt 4 — Accessibility (optional, aber empfohlen): Erklärung warum. Link öffnet Systemeinstellungen. App prüft aktiv alle 500ms ob Permission erteilt.
+- Schritt 5 — KI-Provider: Auswahl (OpenAI / Anthropic / Später). Bei Wahl: Key-Feld erscheint. Validierung läuft nach Eingabe. Feedback inline.
+- Schritt 6 — Zusammenfassung: zeigt aktiven Status jeder Permission und konfigurierten Features. Kein Modal — direkt bereit.
