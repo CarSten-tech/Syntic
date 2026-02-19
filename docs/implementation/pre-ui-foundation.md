@@ -24,6 +24,10 @@ Abgrenzen, welche Kernbausteine vor der ersten echten Produkt-UI/UX technisch st
   - Dictation State + Transition-Operationen
   - Command-Klassifikation + Safety JSON
 - Swift-Bridge mit direkter Nutzung der neuen FFI-Endpunkte.
+- macOS Adapter-Grundlage:
+  - `MacOSTextInjectionAdapter` mit AX -> CGEvent -> Clipboard-Kette
+  - `MacOSFinderContextAdapter` für Finder-Selektion via AppleScript
+- STT-Routing-Regeln im Core (`local/cloud/auto`, Sensitive-Mode Override).
 - Build- und Testkette (Rust + macOS Swift Build) grün.
 
 ## Noch vor erster Produkt-UI nötig

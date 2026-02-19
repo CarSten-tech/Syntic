@@ -97,6 +97,9 @@ struct SpikeLabView: View {
                 result = probe.injectWithAccessibility(text: trimmedText)
             case .cgEvent:
                 result = probe.injectWithCGEvent(text: trimmedText)
+            case .clipboard:
+                appendLog("Clipboard-Methode wird im Spike Lab nicht direkt getriggert.")
+                return
             }
 
             DispatchQueue.main.async {

@@ -15,6 +15,12 @@ protocol SynticCoreVersionProviding {
     func dictationFail(_ message: String) -> UInt8
     func commandClassifyJSON(_ utterance: String) -> String
     func commandSafetyJSON(_ utterance: String) -> String
+    func sttRouteJSON(
+        preferenceMode: UInt8,
+        sensitiveModeEnabled: Bool,
+        networkAvailable: Bool,
+        utteranceDurationMs: UInt32
+    ) -> String
 }
 
 /// Swift-side FFI adapter for the Rust `syntic-ffi` static library.
@@ -90,6 +96,22 @@ struct SynticCoreBridge: SynticCoreVersionProviding {
             readHeapJsonPayload(fallback: "{\"decision\":\"ffi-null-payload\"}") {
                 syntic_command_safety_json(utf8Pointer)
             }
+        }
+    }
+
+    func sttRouteJSON(
+        preferenceMode: UInt8,
+        sensitiveModeEnabled: Bool,
+        networkAvailable: Bool,
+        utteranceDurationMs: UInt32
+    ) -> String {
+        readHeapJsonPayload(fallback: "{\"provider\":\"ffi-null-payload\"}") {
+            syntic_stt_route_json(
+                preferenceMode,
+                sensitiveModeEnabled ? 1 : 0,
+                networkAvailable ? 1 : 0,
+                utteranceDurationMs
+            )
         }
     }
 }

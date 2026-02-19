@@ -8,6 +8,7 @@ use std::sync::{Mutex, OnceLock};
 use syntic_core::CoreRuntime;
 use syntic_core::command::{evaluate_safety, fallback_classify};
 use syntic_core::dictation::DictationTransitionError;
+use syntic_core::stt::{SttPreferenceMode, SttRoutingInput, select_provider};
 
 static CORE_RUNTIME: OnceLock<Mutex<CoreRuntime>> = OnceLock::new();
 const CORE_VERSION_CSTR: &[u8] = concat!(env!("CARGO_PKG_VERSION"), "\0").as_bytes();
@@ -137,6 +138,15 @@ fn command_safety_json(utterance: &str) -> String {
     )
 }
 
+fn parse_stt_preference_mode(raw_value: u8) -> Option<SttPreferenceMode> {
+    match raw_value {
+        0 => Some(SttPreferenceMode::LocalOnly),
+        1 => Some(SttPreferenceMode::CloudOnly),
+        2 => Some(SttPreferenceMode::Auto),
+        _ => None,
+    }
+}
+
 /// Returns a pointer to a static NUL-terminated UTF-8 version string.
 ///
 /// The returned pointer must not be freed by the caller.
@@ -202,6 +212,42 @@ pub extern "C" fn syntic_command_safety_json(utterance: *const c_char) -> *mut c
     };
 
     to_heap_c_string(command_safety_json(&text))
+}
+
+/// Computes STT routing decision from runtime constraints.
+///
+/// `preference_mode` mapping:
+/// - `0`: local only
+/// - `1`: cloud only
+/// - `2`: auto
+///
+/// The caller owns the returned pointer and must release it using
+/// `syntic_string_free`.
+#[unsafe(no_mangle)]
+pub extern "C" fn syntic_stt_route_json(
+    preference_mode: u8,
+    sensitive_mode_enabled: u8,
+    network_available: u8,
+    utterance_duration_ms: u32,
+) -> *mut c_char {
+    let Some(mode) = parse_stt_preference_mode(preference_mode) else {
+        return ptr::null_mut();
+    };
+
+    let decision = select_provider(SttRoutingInput {
+        preference_mode: mode,
+        sensitive_mode_enabled: sensitive_mode_enabled != 0,
+        network_available: network_available != 0,
+        utterance_duration_ms,
+    });
+
+    let payload = format!(
+        "{{\"provider\":\"{}\",\"reason\":\"{}\"}}",
+        decision.provider.as_str(),
+        decision.reason
+    );
+
+    to_heap_c_string(payload)
 }
 
 /// Resets dictation state to `idle`.
@@ -312,6 +358,7 @@ mod tests {
         syntic_dictation_append_partial, syntic_dictation_confirm,
         syntic_dictation_finalize_review, syntic_dictation_reset, syntic_dictation_start,
         syntic_dictation_state_json, syntic_runtime_health_json, syntic_string_free,
+        syntic_stt_route_json,
     };
 
     #[test]
@@ -403,6 +450,20 @@ mod tests {
         assert!(payload_text.contains("\"destructive\":true"));
 
         // SAFETY: `payload_pointer` came from `syntic_command_safety_json`.
+        unsafe { syntic_string_free(payload_pointer) };
+    }
+
+    #[test]
+    fn stt_route_auto_short_utterance_prefers_local() {
+        let payload_pointer = syntic_stt_route_json(2, 0, 1, 2_000);
+        assert!(!payload_pointer.is_null());
+
+        // SAFETY: pointer returned by `syntic_stt_route_json` is a valid C string.
+        let payload = unsafe { CStr::from_ptr(payload_pointer) };
+        let payload_text = payload.to_str().expect("utf8");
+        assert!(payload_text.contains("\"provider\":\"apple_speech_recognizer\""));
+
+        // SAFETY: `payload_pointer` came from `syntic_stt_route_json`.
         unsafe { syntic_string_free(payload_pointer) };
     }
 }

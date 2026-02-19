@@ -23,6 +23,10 @@ char *syntic_runtime_health_json(void);
 char *syntic_dictation_state_json(void);
 char *syntic_command_classify_json(const char *utterance);
 char *syntic_command_safety_json(const char *utterance);
+char *syntic_stt_route_json(uint8_t preference_mode,
+                            uint8_t sensitive_mode_enabled,
+                            uint8_t network_available,
+                            uint32_t utterance_duration_ms);
 uint8_t syntic_dictation_reset(void);
 uint8_t syntic_dictation_start(void);
 uint8_t syntic_dictation_append_partial(const char *text);
