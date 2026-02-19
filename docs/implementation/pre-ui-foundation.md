@@ -54,6 +54,9 @@ Abgrenzen, welche Kernbausteine vor der ersten echten Produkt-UI/UX technisch st
 - E2E-Telemetrie als strukturierte Events/Logs:
   - Core-Telemetry-Events (`category/action/status/context/value_ms`)
   - NDJSON-Log unter `Application Support/Syntic/logs/e2e-telemetry.ndjson`
+- Core-Feed-Projektion als Persistenzgrundlage:
+  - inkrementeller Konsum von `core_events`, `domain_events`, `tool_runtime_signals`, `session_history`
+  - NDJSON-Projektion unter `Application Support/Syntic/logs/core-feed-projection.ndjson`
 - Domain-Event-Ketten bis Tool Runtime:
   - `review_cancel` -> Abort-Queue/Task-Cancellation
   - `review_confirm` -> Commit/Execution-Start der Pending Tool-Invocations

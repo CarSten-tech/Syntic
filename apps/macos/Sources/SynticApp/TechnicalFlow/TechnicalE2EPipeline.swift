@@ -12,10 +12,12 @@ final class TechnicalE2EPipeline: ObservableObject {
     @Published private(set) var coreEventsJSON = "{\"events\":[]}"
     @Published private(set) var domainEventsJSON = "{\"events\":[]}"
     @Published private(set) var toolRuntimeSignalsJSON = "{\"signals\":[]}"
+    @Published private(set) var coreSessionHistoryJSON = "{\"records\":[]}"
     @Published private(set) var toolRuntimeQueueJSON = "{\"pending\":[],\"running\":[],\"completed\":[],\"cancelled\":[],\"failed\":[]}"
     @Published private(set) var toolRuntimeExecutionLogPath = "-"
     @Published private(set) var dictationStateJSON = "{}"
     @Published private(set) var telemetryLogPath = "-"
+    @Published private(set) var coreFeedProjectionPath = "-"
     @Published private(set) var logs: [String] = []
 
     @Published var networkAvailable = true
@@ -30,12 +32,15 @@ final class TechnicalE2EPipeline: ObservableObject {
     private let textInjectionAdapter: TextInjecting
     private let toolExecutor: ToolExecuting
     private let telemetryLogger: StructuredTelemetryLogging
+    private let coreFeedProjector: CoreFeedProjecting
 
     private var isTranscribing = false
     private var activeSessionStartedAtMs: UInt64?
     private var activeRouteProvider = "unknown"
+    private var lastSeenCoreEventID: UInt64 = 0
     private var lastSeenDomainEventID: UInt64 = 0
     private var lastSeenToolRuntimeSignalID: UInt64 = 0
+    private var lastSeenSessionHistoryRecordID: UInt64 = 0
     private var nextToolInvocationOrdinal: UInt64 = 1
     private var pendingToolInvocations: [ToolInvocation] = []
     private var runningToolInvocationTasks: [String: Task<Void, Never>] = [:]
@@ -43,6 +48,10 @@ final class TechnicalE2EPipeline: ObservableObject {
     private var completedToolInvocationIDs: [String] = []
     private var cancelledToolInvocationIDs: [String] = []
     private var failedToolInvocationIDs: [String] = []
+    private var coreEventWindow: [CoreEventEnvelope] = []
+    private var domainEventWindow: [DomainEventEnvelope] = []
+    private var toolSignalWindow: [ToolRuntimeSignalEnvelope] = []
+    private var sessionHistoryWindow: [CoreSessionHistoryRecordEnvelope] = []
 
     init(
         coreBridge: SynticCoreVersionProviding,
@@ -54,7 +63,8 @@ final class TechnicalE2EPipeline: ObservableObject {
         cloudSttAdapter: STTTranscribing = CloudStubSTTAdapter(),
         textInjectionAdapter: TextInjecting = MacOSTextInjectionAdapter(),
         toolExecutor: ToolExecuting = FileBackedToolExecutor(),
-        telemetryLogger: StructuredTelemetryLogging = NDJSONTelemetryLogger()
+        telemetryLogger: StructuredTelemetryLogging = NDJSONTelemetryLogger(),
+        coreFeedProjector: CoreFeedProjecting = NDJSONCoreFeedProjector()
     ) {
         self.coreBridge = coreBridge
         self.settingsController = settingsController
@@ -66,14 +76,17 @@ final class TechnicalE2EPipeline: ObservableObject {
         self.textInjectionAdapter = textInjectionAdapter
         self.toolExecutor = toolExecutor
         self.telemetryLogger = telemetryLogger
+        self.coreFeedProjector = coreFeedProjector
 
         dictationStateJSON = coreBridge.dictationStateJSON()
         telemetryLogPath = telemetryLogger.logFilePath
+        coreFeedProjectionPath = coreFeedProjector.logFilePath
         toolRuntimeExecutionLogPath = toolExecutor.executionLogPath
         _ = coreBridge.coreEventsClear()
         _ = coreBridge.domainEventsClear()
         refreshCoreEventsFeed()
         refreshDomainAndToolRuntimeFeeds()
+        refreshCoreSessionHistoryFeed()
         refreshToolRuntimeQueueSnapshot()
         emitTelemetry(
             category: "e2e_flow",
@@ -247,6 +260,8 @@ final class TechnicalE2EPipeline: ObservableObject {
                 status: "degraded",
                 context: ["status": "\(coreUndoStatus)"]
             )
+        } else {
+            refreshCoreSessionHistoryFeed()
         }
 
         _ = coreBridge.dictationReset()
@@ -550,7 +565,24 @@ final class TechnicalE2EPipeline: ObservableObject {
     }
 
     private func refreshCoreEventsFeed() {
-        coreEventsJSON = coreBridge.coreEventsSinceJSON(lastSeenEventID: 0, limit: 64)
+        let payload = coreBridge.coreEventsSinceJSON(lastSeenEventID: lastSeenCoreEventID, limit: 64)
+        guard let events = decodeCoreEvents(from: payload) else {
+            coreEventsJSON = payload
+            return
+        }
+
+        for event in events {
+            lastSeenCoreEventID = max(lastSeenCoreEventID, event.id)
+            projectCoreFeedItem(
+                kind: "core_event",
+                source: event.source,
+                itemID: event.id,
+                payload: event
+            )
+        }
+
+        appendCoreEventsToWindow(events)
+        coreEventsJSON = encodeCoreEventPayload(events: coreEventWindow) ?? "{\"events\":[]}"
     }
 
     private func refreshDomainAndToolRuntimeFeeds() {
@@ -558,27 +590,69 @@ final class TechnicalE2EPipeline: ObservableObject {
             lastSeenEventID: lastSeenDomainEventID,
             limit: 64
         )
-        domainEventsJSON = domainPayload
         if let domainEvents = decodeDomainEvents(from: domainPayload) {
             for domainEvent in domainEvents {
                 lastSeenDomainEventID = max(lastSeenDomainEventID, domainEvent.id)
                 appendLog(
                     "Domain event consumed: id=\(domainEvent.id), name=\(domainEvent.name), source=\(domainEvent.source)."
                 )
+                projectCoreFeedItem(
+                    kind: "domain_event",
+                    source: domainEvent.source,
+                    itemID: domainEvent.id,
+                    payload: domainEvent
+                )
             }
+            appendDomainEventsToWindow(domainEvents)
+            domainEventsJSON = encodeDomainEventPayload(events: domainEventWindow) ?? "{\"events\":[]}"
+        } else {
+            domainEventsJSON = domainPayload
         }
 
         let toolSignalsPayload = coreBridge.toolRuntimeSignalsSinceJSON(
             lastSeenSignalID: lastSeenToolRuntimeSignalID,
             limit: 64
         )
-        toolRuntimeSignalsJSON = toolSignalsPayload
         if let toolSignals = decodeToolRuntimeSignals(from: toolSignalsPayload) {
             for signal in toolSignals {
                 lastSeenToolRuntimeSignalID = max(lastSeenToolRuntimeSignalID, signal.id)
+                projectCoreFeedItem(
+                    kind: "tool_runtime_signal",
+                    source: "core.tool_runtime",
+                    itemID: signal.id,
+                    payload: signal
+                )
                 consumeToolRuntimeSignal(signal)
             }
+            appendToolSignalsToWindow(toolSignals)
+            toolRuntimeSignalsJSON = encodeToolSignalPayload(signals: toolSignalWindow) ?? "{\"signals\":[]}"
+        } else {
+            toolRuntimeSignalsJSON = toolSignalsPayload
         }
+    }
+
+    private func refreshCoreSessionHistoryFeed() {
+        let payload = coreBridge.coreSessionHistorySinceJSON(
+            lastSeenRecordID: lastSeenSessionHistoryRecordID,
+            limit: 64
+        )
+        guard let records = decodeCoreSessionHistory(from: payload) else {
+            coreSessionHistoryJSON = payload
+            return
+        }
+
+        for record in records {
+            lastSeenSessionHistoryRecordID = max(lastSeenSessionHistoryRecordID, record.id)
+            projectCoreFeedItem(
+                kind: "session_history",
+                source: "core.session_history",
+                itemID: record.id,
+                payload: record
+            )
+        }
+
+        appendSessionHistoryToWindow(records)
+        coreSessionHistoryJSON = encodeSessionHistoryPayload(records: sessionHistoryWindow) ?? "{\"records\":[]}"
     }
 
     private func consumeToolRuntimeSignal(_ signal: ToolRuntimeSignalEnvelope) {
@@ -855,6 +929,14 @@ final class TechnicalE2EPipeline: ObservableObject {
         toolRuntimeQueueJSON = value
     }
 
+    private func decodeCoreEvents(from payload: String) -> [CoreEventEnvelope]? {
+        guard let data = payload.data(using: .utf8) else {
+            return nil
+        }
+        let decoded = try? JSONDecoder().decode(CoreEventsPayload.self, from: data)
+        return decoded?.events
+    }
+
     private func decodeDomainEvents(from payload: String) -> [DomainEventEnvelope]? {
         guard let data = payload.data(using: .utf8) else {
             return nil
@@ -883,6 +965,99 @@ final class TechnicalE2EPipeline: ObservableObject {
         }
         let decoded = try? JSONDecoder().decode(ToolRuntimeSignalsPayload.self, from: data)
         return decoded?.signals
+    }
+
+    private func decodeCoreSessionHistory(from payload: String) -> [CoreSessionHistoryRecordEnvelope]? {
+        guard let data = payload.data(using: .utf8) else {
+            return nil
+        }
+        let decoded = try? JSONDecoder().decode(CoreSessionHistoryPayload.self, from: data)
+        return decoded?.records
+    }
+
+    private func encodeCoreEventPayload(events: [CoreEventEnvelope]) -> String? {
+        encodeJSON(CoreEventsPayload(events: events))
+    }
+
+    private func encodeDomainEventPayload(events: [DomainEventEnvelope]) -> String? {
+        encodeJSON(DomainEventsPayload(events: events))
+    }
+
+    private func encodeToolSignalPayload(signals: [ToolRuntimeSignalEnvelope]) -> String? {
+        encodeJSON(ToolRuntimeSignalsPayload(signals: signals))
+    }
+
+    private func encodeSessionHistoryPayload(records: [CoreSessionHistoryRecordEnvelope]) -> String? {
+        encodeJSON(CoreSessionHistoryPayload(records: records))
+    }
+
+    private func encodeJSON<T: Encodable>(_ value: T) -> String? {
+        let encoder = JSONEncoder()
+        guard
+            let data = try? encoder.encode(value),
+            let json = String(data: data, encoding: .utf8)
+        else {
+            return nil
+        }
+        return json
+    }
+
+    private func projectCoreFeedItem<T: Encodable>(
+        kind: String,
+        source: String,
+        itemID: UInt64,
+        payload: T
+    ) {
+        guard let payloadJSON = encodeJSON(payload) else {
+            return
+        }
+        coreFeedProjector.append(
+            CoreFeedProjectionEvent(
+                feedKind: kind,
+                source: source,
+                itemID: itemID,
+                payloadJSON: payloadJSON
+            )
+        )
+    }
+
+    private func appendCoreEventsToWindow(_ events: [CoreEventEnvelope]) {
+        guard !events.isEmpty else {
+            return
+        }
+        coreEventWindow.append(contentsOf: events)
+        trimWindow(&coreEventWindow, maxCount: 128)
+    }
+
+    private func appendDomainEventsToWindow(_ events: [DomainEventEnvelope]) {
+        guard !events.isEmpty else {
+            return
+        }
+        domainEventWindow.append(contentsOf: events)
+        trimWindow(&domainEventWindow, maxCount: 128)
+    }
+
+    private func appendToolSignalsToWindow(_ signals: [ToolRuntimeSignalEnvelope]) {
+        guard !signals.isEmpty else {
+            return
+        }
+        toolSignalWindow.append(contentsOf: signals)
+        trimWindow(&toolSignalWindow, maxCount: 128)
+    }
+
+    private func appendSessionHistoryToWindow(_ records: [CoreSessionHistoryRecordEnvelope]) {
+        guard !records.isEmpty else {
+            return
+        }
+        sessionHistoryWindow.append(contentsOf: records)
+        trimWindow(&sessionHistoryWindow, maxCount: 256)
+    }
+
+    private func trimWindow<T>(_ buffer: inout [T], maxCount: Int) {
+        guard buffer.count > maxCount else {
+            return
+        }
+        buffer.removeFirst(buffer.count - maxCount)
     }
 
     private func setPhase(
@@ -983,6 +1158,8 @@ final class TechnicalE2EPipeline: ObservableObject {
                 status: "degraded",
                 context: ["status": "\(coreMirrorStatus)"]
             )
+        } else {
+            refreshCoreSessionHistoryFeed()
         }
 
         activeSessionStartedAtMs = nil
@@ -1062,12 +1239,51 @@ private struct ToolInvocationSnapshot: Codable {
     let timer_duration_hint: String?
 }
 
-private struct DomainEventsPayload: Decodable {
+private struct CoreEventsPayload: Codable {
+    let events: [CoreEventEnvelope]
+}
+
+private struct CoreEventEnvelope: Codable {
+    let id: UInt64
+    let timestampMs: UInt64?
+    let kind: String?
+    let severity: String?
+    let source: String
+    let code: String?
+    let message: String?
+    let permission: String?
+    let status: String?
+    let detail: String?
+    let category: String?
+    let action: String?
+    let contextJSON: String?
+    let valueMs: UInt32?
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case timestampMs = "timestamp_ms"
+        case kind
+        case severity
+        case source
+        case code
+        case message
+        case permission
+        case status
+        case detail
+        case category
+        case action
+        case contextJSON = "context_json"
+        case valueMs = "value_ms"
+    }
+}
+
+private struct DomainEventsPayload: Codable {
     let events: [DomainEventEnvelope]
 }
 
-private struct DomainEventEnvelope: Decodable {
+private struct DomainEventEnvelope: Codable {
     let id: UInt64
+    let timestampMs: UInt64?
     let name: String
     let source: String
     let phaseBefore: String
@@ -1075,6 +1291,7 @@ private struct DomainEventEnvelope: Decodable {
 
     enum CodingKeys: String, CodingKey {
         case id
+        case timestampMs = "timestamp_ms"
         case name
         case source
         case phaseBefore = "phase_before"
@@ -1082,21 +1299,53 @@ private struct DomainEventEnvelope: Decodable {
     }
 }
 
-private struct ToolRuntimeSignalsPayload: Decodable {
+private struct ToolRuntimeSignalsPayload: Codable {
     let signals: [ToolRuntimeSignalEnvelope]
 }
 
-private struct ToolRuntimeSignalEnvelope: Decodable {
+private struct ToolRuntimeSignalEnvelope: Codable {
     let id: UInt64
+    let timestampMs: UInt64?
     let action: String
     let reason: String
     let originDomainEventID: UInt64
 
     enum CodingKeys: String, CodingKey {
         case id
+        case timestampMs = "timestamp_ms"
         case action
         case reason
         case originDomainEventID = "origin_domain_event_id"
+    }
+}
+
+private struct CoreSessionHistoryPayload: Codable {
+    let records: [CoreSessionHistoryRecordEnvelope]
+}
+
+private struct CoreSessionHistoryRecordEnvelope: Codable {
+    let id: UInt64
+    let createdAtMs: UInt64
+    let durationMs: UInt32?
+    let locale: String
+    let routeProvider: String
+    let outcome: String
+    let transcript: String
+    let errorCode: String?
+    let injectionDisposition: String?
+    let undoneAtMs: UInt64?
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case createdAtMs = "created_at_ms"
+        case durationMs = "duration_ms"
+        case locale
+        case routeProvider = "route_provider"
+        case outcome
+        case transcript
+        case errorCode = "error_code"
+        case injectionDisposition = "injection_disposition"
+        case undoneAtMs = "undone_at_ms"
     }
 }
 
