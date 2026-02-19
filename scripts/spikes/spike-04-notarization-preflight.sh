@@ -7,7 +7,8 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 INFO_PLIST="${REPO_ROOT}/apps/macos/Packaging/Info.plist"
 ENTITLEMENTS_PLIST="${REPO_ROOT}/apps/macos/Packaging/SynticRelease.entitlements"
 PLIST_BUDDY="/usr/libexec/PlistBuddy"
-REQUIRE_NOTARYTOOL_PROFILE="${REQUIRE_NOTARYTOOL_PROFILE:-0}"
+REQUIRE_NOTARY_AUTH="${REQUIRE_NOTARY_AUTH:-0}"
+NOTARY_AUTH_MODE="${NOTARY_AUTH_MODE:-auto}"
 
 FAIL_COUNT=0
 
@@ -37,6 +38,16 @@ check_executable_file() {
     print_result "ok" "${name}" "${path}"
   else
     print_result "fail" "${name}" "missing executable at ${path}"
+  fi
+}
+
+check_regular_file() {
+  local path="$1"
+  local check_name="$2"
+  if [[ -f "${path}" ]]; then
+    print_result "ok" "${check_name}" "${path}"
+  else
+    print_result "fail" "${check_name}" "missing file: ${path}"
   fi
 }
 
@@ -152,15 +163,74 @@ else
   print_result "ok" "codesign-identity-selected" "CODESIGN_IDENTITY not set (selection skipped)"
 fi
 
-if [[ "${REQUIRE_NOTARYTOOL_PROFILE}" == "1" && -z "${NOTARYTOOL_PROFILE:-}" ]]; then
-  print_result "fail" "notarytool-profile" "required but NOTARYTOOL_PROFILE not set"
-elif [[ "${REQUIRE_NOTARYTOOL_PROFILE}" != "1" && -z "${NOTARYTOOL_PROFILE:-}" ]]; then
-  print_result "ok" "notarytool-profile" "NOTARYTOOL_PROFILE not set (skipped validation)"
-elif [[ -n "${NOTARYTOOL_PROFILE:-}" ]]; then
-  if xcrun notarytool history --keychain-profile "${NOTARYTOOL_PROFILE}" >/dev/null 2>&1; then
+has_profile_auth() {
+  [[ -n "${NOTARYTOOL_PROFILE:-}" ]]
+}
+
+has_api_key_auth() {
+  [[ -n "${NOTARY_API_KEY_PATH:-}" ]] || [[ -n "${NOTARY_API_KEY_ID:-}" ]] || [[ -n "${NOTARY_ISSUER_ID:-}" ]]
+}
+
+selected_auth_mode=""
+case "${NOTARY_AUTH_MODE}" in
+  auto)
+    if has_profile_auth; then
+      selected_auth_mode="profile"
+    elif has_api_key_auth; then
+      selected_auth_mode="api_key"
+    else
+      selected_auth_mode="none"
+    fi
+    ;;
+  profile|api_key)
+    selected_auth_mode="${NOTARY_AUTH_MODE}"
+    ;;
+  *)
+    selected_auth_mode="invalid"
+    ;;
+esac
+
+if [[ "${selected_auth_mode}" == "invalid" ]]; then
+  print_result "fail" "notary-auth-mode" "invalid NOTARY_AUTH_MODE='${NOTARY_AUTH_MODE}' (expected auto|profile|api_key)"
+elif [[ "${selected_auth_mode}" == "none" ]]; then
+  if [[ "${REQUIRE_NOTARY_AUTH}" == "1" ]]; then
+    print_result "fail" "notary-auth-mode" "required but no notary auth configured"
+  else
+    print_result "ok" "notary-auth-mode" "none (optional)"
+  fi
+else
+  print_result "ok" "notary-auth-mode" "${selected_auth_mode}"
+fi
+
+if [[ "${selected_auth_mode}" == "profile" ]]; then
+  if [[ -z "${NOTARYTOOL_PROFILE:-}" ]]; then
+    print_result "fail" "notarytool-profile" "NOTARYTOOL_PROFILE is required for profile mode"
+  elif xcrun notarytool history --keychain-profile "${NOTARYTOOL_PROFILE}" >/dev/null 2>&1; then
     print_result "ok" "notarytool-profile" "${NOTARYTOOL_PROFILE}"
   else
     print_result "fail" "notarytool-profile" "profile '${NOTARYTOOL_PROFILE}' invalid or inaccessible"
+  fi
+elif [[ "${selected_auth_mode}" == "api_key" ]]; then
+  if [[ -z "${NOTARY_API_KEY_PATH:-}" ]]; then
+    print_result "fail" "notary-api-key-path" "NOTARY_API_KEY_PATH missing"
+  else
+    check_regular_file "${NOTARY_API_KEY_PATH}" "notary-api-key-path"
+  fi
+
+  if [[ -z "${NOTARY_API_KEY_ID:-}" ]]; then
+    print_result "fail" "notary-api-key-id" "NOTARY_API_KEY_ID missing"
+  elif [[ "${NOTARY_API_KEY_ID}" =~ ^[A-Z0-9]{10}$ ]]; then
+    print_result "ok" "notary-api-key-id" "${NOTARY_API_KEY_ID}"
+  else
+    print_result "fail" "notary-api-key-id" "unexpected key id format '${NOTARY_API_KEY_ID}'"
+  fi
+
+  if [[ -z "${NOTARY_ISSUER_ID:-}" ]]; then
+    print_result "fail" "notary-issuer-id" "NOTARY_ISSUER_ID missing"
+  elif [[ "${NOTARY_ISSUER_ID}" =~ ^[0-9a-fA-F-]{36}$ ]]; then
+    print_result "ok" "notary-issuer-id" "${NOTARY_ISSUER_ID}"
+  else
+    print_result "fail" "notary-issuer-id" "unexpected issuer id format '${NOTARY_ISSUER_ID}'"
   fi
 fi
 

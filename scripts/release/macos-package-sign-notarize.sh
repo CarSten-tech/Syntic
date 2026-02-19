@@ -54,14 +54,83 @@ if [[ -z "${CODESIGN_IDENTITY:-}" ]]; then
   exit 1
 fi
 
+resolve_notary_auth_mode() {
+  local configured_mode="${NOTARY_AUTH_MODE:-auto}"
+  local has_profile=0
+  local has_api_key=0
+
+  if [[ -n "${NOTARYTOOL_PROFILE:-}" ]]; then
+    has_profile=1
+  fi
+  if [[ -n "${NOTARY_API_KEY_PATH:-}" || -n "${NOTARY_API_KEY_ID:-}" || -n "${NOTARY_ISSUER_ID:-}" ]]; then
+    has_api_key=1
+  fi
+
+  case "${configured_mode}" in
+    auto)
+      if (( has_profile == 1 )); then
+        echo "profile"
+      elif (( has_api_key == 1 )); then
+        echo "api_key"
+      else
+        echo "none"
+      fi
+      ;;
+    profile|api_key)
+      echo "${configured_mode}"
+      ;;
+    *)
+      echo "invalid"
+      ;;
+  esac
+}
+
+build_notary_auth_args() {
+  local mode="$1"
+  case "${mode}" in
+    profile)
+      if [[ -z "${NOTARYTOOL_PROFILE:-}" ]]; then
+        echo "error: NOTARYTOOL_PROFILE is required for NOTARY_AUTH_MODE=profile"
+        exit 1
+      fi
+      NOTARY_AUTH_ARGS=(--keychain-profile "${NOTARYTOOL_PROFILE}")
+      ;;
+    api_key)
+      if [[ -z "${NOTARY_API_KEY_PATH:-}" || -z "${NOTARY_API_KEY_ID:-}" || -z "${NOTARY_ISSUER_ID:-}" ]]; then
+        echo "error: NOTARY_API_KEY_PATH, NOTARY_API_KEY_ID and NOTARY_ISSUER_ID are required for NOTARY_AUTH_MODE=api_key"
+        exit 1
+      fi
+      NOTARY_AUTH_ARGS=(
+        --key "${NOTARY_API_KEY_PATH}"
+        --key-id "${NOTARY_API_KEY_ID}"
+        --issuer "${NOTARY_ISSUER_ID}"
+      )
+      ;;
+    *)
+      echo "error: unsupported notary auth mode '${mode}'"
+      exit 1
+      ;;
+  esac
+}
+
 echo "==> Preflight (signing/notarization prerequisites)"
-REQUIRE_NOTARYTOOL_PROFILE=0
+REQUIRE_NOTARY_AUTH=0
 if [[ "${SKIP_NOTARIZATION:-0}" != "1" ]]; then
-  REQUIRE_NOTARYTOOL_PROFILE=1
+  REQUIRE_NOTARY_AUTH=1
 fi
-REQUIRE_NOTARYTOOL_PROFILE="${REQUIRE_NOTARYTOOL_PROFILE}" \
+NOTARY_AUTH_MODE_RESOLVED="$(resolve_notary_auth_mode)"
+if [[ "${NOTARY_AUTH_MODE_RESOLVED}" == "invalid" ]]; then
+  echo "error: invalid NOTARY_AUTH_MODE='${NOTARY_AUTH_MODE:-auto}' (expected auto|profile|api_key)"
+  exit 1
+fi
+
+REQUIRE_NOTARY_AUTH="${REQUIRE_NOTARY_AUTH}" \
+  NOTARY_AUTH_MODE="${NOTARY_AUTH_MODE_RESOLVED}" \
   CODESIGN_IDENTITY="${CODESIGN_IDENTITY}" \
   NOTARYTOOL_PROFILE="${NOTARYTOOL_PROFILE:-}" \
+  NOTARY_API_KEY_PATH="${NOTARY_API_KEY_PATH:-}" \
+  NOTARY_API_KEY_ID="${NOTARY_API_KEY_ID:-}" \
+  NOTARY_ISSUER_ID="${NOTARY_ISSUER_ID:-}" \
   "${PRE_FLIGHT_SCRIPT}"
 
 echo "==> Build Rust FFI (release)"
@@ -112,10 +181,13 @@ if [[ "${SKIP_NOTARIZATION:-0}" == "1" ]]; then
   exit 0
 fi
 
-if [[ -z "${NOTARYTOOL_PROFILE:-}" ]]; then
-  echo "error: NOTARYTOOL_PROFILE is required unless SKIP_NOTARIZATION=1"
+if [[ "${NOTARY_AUTH_MODE_RESOLVED}" == "none" ]]; then
+  echo "error: notarization auth is required unless SKIP_NOTARIZATION=1"
+  echo "hint: set NOTARYTOOL_PROFILE or set NOTARY_AUTH_MODE=api_key with NOTARY_API_KEY_PATH/NOTARY_API_KEY_ID/NOTARY_ISSUER_ID"
   exit 1
 fi
+build_notary_auth_args "${NOTARY_AUTH_MODE_RESOLVED}"
+echo "==> Notarization auth mode: ${NOTARY_AUTH_MODE_RESOLVED}"
 
 echo "==> Submit for notarization"
 NOTARY_OUTPUT_JSON="$(mktemp -t syntic-notary-output.XXXXXX.json)"
@@ -126,7 +198,7 @@ trap cleanup_notary_output EXIT
 
 set +e
 xcrun notarytool submit "${ZIP_PATH}" \
-  --keychain-profile "${NOTARYTOOL_PROFILE}" \
+  "${NOTARY_AUTH_ARGS[@]}" \
   --wait \
   --output-format json >"${NOTARY_OUTPUT_JSON}" 2>&1
 NOTARY_SUBMIT_EXIT=$?
@@ -145,7 +217,7 @@ if [[ "${NOTARY_STATUS}" != "Accepted" ]]; then
   echo "error: notarization status is '${NOTARY_STATUS:-unknown}'"
   if [[ -n "${NOTARY_SUBMISSION_ID}" ]]; then
     echo "==> Notarization log (${NOTARY_SUBMISSION_ID})"
-    xcrun notarytool log "${NOTARY_SUBMISSION_ID}" --keychain-profile "${NOTARYTOOL_PROFILE}" || true
+    xcrun notarytool log "${NOTARY_SUBMISSION_ID}" "${NOTARY_AUTH_ARGS[@]}" || true
   fi
   exit 1
 fi

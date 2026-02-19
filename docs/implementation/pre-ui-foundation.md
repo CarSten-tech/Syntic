@@ -43,6 +43,10 @@ Abgrenzen, welche Kernbausteine vor der ersten echten Produkt-UI/UX technisch st
   - Session-History in `Application Support/Syntic/session-history.json`
   - Schema-Version + Corrupt-Recovery mit Backup-Datei
   - Undo-Basis: letzter bestätigter Transcript kann in Review-Zustand zurückgeführt werden
+- Session-History im Core/FFI gespiegelt:
+  - In-Memory Session-History-Journal im Core (record/since/clear/undo-mark)
+  - FFI-Endpunkte für Session-History-Record/Undo/Feed/Clear
+  - macOS-Pipeline spiegelt Persist-/Undo-Operationen zusätzlich in den Core
 - Core-Event-Routing (Error + Permission):
   - In-memory Event-Journal im Core (Ring-Buffer)
   - FFI-Endpunkte für Event-Report und Event-Feed
@@ -76,4 +80,4 @@ Abgrenzen, welche Kernbausteine vor der ersten echten Produkt-UI/UX technisch st
 
 1. Entitlements/Signing operativ abschließen (Credentials + erster grüner Notarization-Lauf).
 2. Event-Feed konsumierend in Produkt-UI statt Debug-Textprojektion.
-3. Session-History in Core/FFI spiegeln (statt nur Shell-Persistenz) für plattformübergreifende Konsistenz.
+3. Release- und Notarization-Flow in CI mit Secrets/Signing-Keychain operationalisieren.

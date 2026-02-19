@@ -37,7 +37,18 @@ Strikter Modus für Release/CI:
 
 ```bash
 cd /Users/carstenrheidt/Syntic
-REQUIRE_NOTARYTOOL_PROFILE=1 NOTARYTOOL_PROFILE="syntic-notary" \
+REQUIRE_NOTARY_AUTH=1 NOTARY_AUTH_MODE="profile" NOTARYTOOL_PROFILE="syntic-notary" \
+  ./scripts/spikes/spike-04-notarization-preflight.sh
+```
+
+Alternative mit API-Key-Auth:
+
+```bash
+cd /Users/carstenrheidt/Syntic
+REQUIRE_NOTARY_AUTH=1 NOTARY_AUTH_MODE="api_key" \
+  NOTARY_API_KEY_PATH="/abs/path/AuthKey_ABC123DEFG.p8" \
+  NOTARY_API_KEY_ID="ABC123DEFG" \
+  NOTARY_ISSUER_ID="00000000-0000-0000-0000-000000000000" \
   ./scripts/spikes/spike-04-notarization-preflight.sh
 ```
 
@@ -47,6 +58,18 @@ REQUIRE_NOTARYTOOL_PROFILE=1 NOTARYTOOL_PROFILE="syntic-notary" \
 cd /Users/carstenrheidt/Syntic
 export CODESIGN_IDENTITY="Developer ID Application: YOUR NAME (TEAMID)"
 export NOTARYTOOL_PROFILE="syntic-notary"
+./scripts/release/macos-package-sign-notarize.sh
+```
+
+Oder mit API-Key-Auth:
+
+```bash
+cd /Users/carstenrheidt/Syntic
+export CODESIGN_IDENTITY="Developer ID Application: YOUR NAME (TEAMID)"
+export NOTARY_AUTH_MODE="api_key"
+export NOTARY_API_KEY_PATH="/abs/path/AuthKey_ABC123DEFG.p8"
+export NOTARY_API_KEY_ID="ABC123DEFG"
+export NOTARY_ISSUER_ID="00000000-0000-0000-0000-000000000000"
 ./scripts/release/macos-package-sign-notarize.sh
 ```
 
