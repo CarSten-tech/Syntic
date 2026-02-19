@@ -208,6 +208,9 @@ final class TechnicalE2EPipeline: ObservableObject {
         latestInjectionSummary =
             "disposition=\(describe(injectionResult.disposition)), method=\(injectionResult.method.rawValue), bundle=\(targetBundleIdentifier ?? "unknown")"
         updateHotkeyDebug("injection \(latestInjectionSummary) detail=\(injectionResult.detail)")
+        if injectionResult.disposition == .clipboardFallback {
+            updateHotkeyDebug("clipboard_fallback: falls kein Text erscheint, bitte Cmd+V druecken")
+        }
         appendLog("Injection result: \(latestInjectionSummary). \(injectionResult.detail)")
         let injectionTelemetryStatus: String
         switch injectionResult.disposition {

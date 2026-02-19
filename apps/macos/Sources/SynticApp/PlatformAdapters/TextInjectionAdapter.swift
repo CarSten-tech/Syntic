@@ -187,6 +187,14 @@ struct MacOSTextInjectionAdapter: TextInjecting {
     }
 
     private func injectUsingCGEvent(_ text: String) -> TextInjectionResult {
+        guard accessibilityPermissionGranted() else {
+            return TextInjectionResult(
+                disposition: .failed,
+                method: .cgEvent,
+                detail: "Accessibility-Berechtigung fehlt (CGEvent blockiert)."
+            )
+        }
+
         guard let eventSource = CGEventSource(stateID: .hidSystemState) else {
             return TextInjectionResult(
                 disposition: .failed,
@@ -239,7 +247,7 @@ struct MacOSTextInjectionAdapter: TextInjecting {
             let pasteResult = postPasteShortcut()
             if pasteResult.sent {
                 return TextInjectionResult(
-                    disposition: .injected,
+                    disposition: .clipboardFallback,
                     method: .clipboard,
                     detail: "\(detail) Text auf Clipboard gelegt. Cmd+V gesendet (\(pasteResult.detail))."
                 )
@@ -260,6 +268,10 @@ struct MacOSTextInjectionAdapter: TextInjecting {
     }
 
     private func postPasteShortcut() -> (sent: Bool, detail: String) {
+        guard accessibilityPermissionGranted() else {
+            return (false, "Accessibility-Berechtigung fehlt")
+        }
+
         guard let source = CGEventSource(stateID: .hidSystemState) else {
             return (false, "CGEventSource fehlgeschlagen")
         }
