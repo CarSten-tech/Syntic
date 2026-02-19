@@ -16,6 +16,22 @@ open dist/macos-local/SynticLocal.app
 
 Dieser Pfad ist nur für lokale Nutzung/Tests gedacht (ad-hoc signiert, nicht notarisiert).
 
+## CI/Automation (GitHub Actions)
+
+Workflow: `.github/workflows/macos-release.yml` (manuell via `workflow_dispatch`).
+
+Benötigte GitHub-Secrets:
+- `APPLE_CERT_P12_BASE64` (Base64 von Developer-ID `.p12`)
+- `APPLE_CERT_PASSWORD` (Passwort der `.p12`)
+- `CI_KEYCHAIN_PASSWORD` (temporäres Keychain-Passwort im Runner)
+- `NOTARY_API_KEY_P8` (Inhalt der `AuthKey_*.p8`, nur für notarize=true)
+- `NOTARY_API_KEY_ID` (Key ID, nur für notarize=true)
+- `NOTARY_ISSUER_ID` (Issuer UUID, nur für notarize=true)
+
+Hinweise:
+- `notarize=false`: signierter Build ohne Notarization.
+- `notarize=true`: Sign + Notarization über API-Key-Auth.
+
 ## Vorbedingungen
 
 - Vollständiges Xcode aktiv (`xcode-select -p` zeigt auf `/Applications/Xcode.app/...`)

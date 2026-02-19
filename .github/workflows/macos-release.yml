@@ -1,0 +1,97 @@
+name: macOS Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      notarize:
+        description: "Run Apple notarization"
+        required: true
+        default: false
+        type: boolean
+      app_name:
+        description: "App bundle name"
+        required: true
+        default: "Syntic"
+        type: string
+      bundle_id:
+        description: "CFBundleIdentifier"
+        required: true
+        default: "com.syntic.app"
+        type: string
+      version:
+        description: "CFBundleShortVersionString"
+        required: true
+        default: "0.1.0"
+        type: string
+      build_number:
+        description: "CFBundleVersion"
+        required: true
+        default: "1"
+        type: string
+
+jobs:
+  release:
+    name: Package + Sign (+ optional notarize)
+    runs-on: macos-14
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Prepare CI signing keychain
+        id: signing
+        env:
+          APPLE_CERT_P12_BASE64: ${{ secrets.APPLE_CERT_P12_BASE64 }}
+          APPLE_CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
+          CI_KEYCHAIN_PASSWORD: ${{ secrets.CI_KEYCHAIN_PASSWORD }}
+        run: ./scripts/release/macos-ci-setup-signing.sh
+
+      - name: Prepare notarization API key
+        if: ${{ inputs.notarize }}
+        id: notary
+        env:
+          NOTARY_API_KEY_P8: ${{ secrets.NOTARY_API_KEY_P8 }}
+        run: |
+          if [[ -z "${NOTARY_API_KEY_P8}" ]]; then
+            echo "error: secret NOTARY_API_KEY_P8 is required when notarize=true"
+            exit 1
+          fi
+          NOTARY_KEY_PATH="${RUNNER_TEMP}/AuthKey.p8"
+          printf '%s' "${NOTARY_API_KEY_P8}" > "${NOTARY_KEY_PATH}"
+          chmod 600 "${NOTARY_KEY_PATH}"
+          echo "notary_api_key_path=${NOTARY_KEY_PATH}" >> "${GITHUB_OUTPUT}"
+
+      - name: Build + sign (no notarization)
+        if: ${{ !inputs.notarize }}
+        env:
+          APP_NAME: ${{ inputs.app_name }}
+          BUNDLE_ID: ${{ inputs.bundle_id }}
+          VERSION: ${{ inputs.version }}
+          BUILD_NUMBER: ${{ inputs.build_number }}
+          CODESIGN_IDENTITY: ${{ steps.signing.outputs.codesign_identity }}
+          SKIP_NOTARIZATION: "1"
+        run: ./scripts/release/macos-package-sign-notarize.sh
+
+      - name: Build + sign + notarize
+        if: ${{ inputs.notarize }}
+        env:
+          APP_NAME: ${{ inputs.app_name }}
+          BUNDLE_ID: ${{ inputs.bundle_id }}
+          VERSION: ${{ inputs.version }}
+          BUILD_NUMBER: ${{ inputs.build_number }}
+          CODESIGN_IDENTITY: ${{ steps.signing.outputs.codesign_identity }}
+          SKIP_NOTARIZATION: "0"
+          NOTARY_AUTH_MODE: "api_key"
+          NOTARY_API_KEY_PATH: ${{ steps.notary.outputs.notary_api_key_path }}
+          NOTARY_API_KEY_ID: ${{ secrets.NOTARY_API_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
+        run: ./scripts/release/macos-package-sign-notarize.sh
+
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-dist-${{ github.run_number }}
+          path: dist/macos/
+          if-no-files-found: error

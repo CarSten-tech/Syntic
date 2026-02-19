@@ -96,7 +96,13 @@ export NOTARY_ISSUER_ID="00000000-0000-0000-0000-000000000000"
 
 - Wer stellt die finalen Team-/Issuer-Credentials für notarytool bereit?
 - Wird Sparkle-Signierung parallel oder nach Notarization-Spike eingeführt?
-- CI-Secrets für Signing/Notarization anlegen (Developer-ID + Notarytool Profilzugriff).
+- CI-Secrets für Signing/Notarization anlegen (Developer-ID + API-Key-Zugang).
+
+## CI Workflow (neu)
+
+- Manual Release Workflow: `.github/workflows/macos-release.yml`
+- CI-Keychain-Setup: `scripts/release/macos-ci-setup-signing.sh`
+- Auth-Strategie in CI: API-Key-Mode (`NOTARY_AUTH_MODE=api_key`)
 
 ## Letzter lokaler Preflight
 

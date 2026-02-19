@@ -64,6 +64,7 @@ Abgrenzen, welche Kernbausteine vor der ersten echten Produkt-UI/UX technisch st
   - Release-Runner (`scripts/release/macos-package-sign-notarize.sh`)
   - Erweiterter Spike-04 Preflight mit Fail-fast Checks
   - Release-Runner startet Preflight verpflichtend vor Build/Sign/Notarize
+  - CI-Workflow-Basis für signierten Build (+ optionale Notarization) vorhanden
 - Build- und Testkette (Rust + macOS Swift Build) grün.
 
 ## Noch vor erster Produkt-UI nötig
@@ -81,4 +82,4 @@ Abgrenzen, welche Kernbausteine vor der ersten echten Produkt-UI/UX technisch st
 
 1. Entitlements/Signing operativ abschließen (Credentials + erster grüner Notarization-Lauf).
 2. Event-Feed konsumierend in Produkt-UI statt Debug-Textprojektion.
-3. Release- und Notarization-Flow in CI mit Secrets/Signing-Keychain operationalisieren.
+3. Release- und Notarization-Flow in CI mit echten Secrets und erstem grünen Workflow-Lauf operationalisieren.
