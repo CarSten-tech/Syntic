@@ -436,13 +436,18 @@ final class TechnicalE2EPipeline: ObservableObject {
 
         switch result {
         case let .failure(error):
+            let sttFailureCode = reportStructuredSTTFailure(error)
             emitTelemetry(
                 category: "stt",
                 action: "transcription_failed",
                 status: "failed",
-                context: ["error": error.localizedDescription]
+                context: [
+                    "provider": activeRouteProvider,
+                    "error_code": sttFailureCode,
+                    "error": error.localizedDescription,
+                ]
             )
-            fail("stt_transcription_failed_\(error.localizedDescription)")
+            fail("stt_transcription_failed_\(sttFailureCode)", reportCoreError: false)
 
         case let .success(transcriptResult):
             latestTranscript = transcriptResult.transcript
@@ -478,7 +483,73 @@ final class TechnicalE2EPipeline: ObservableObject {
         }
     }
 
-    private func fail(_ reason: String) {
+    private func reportStructuredSTTFailure(_ error: Error) -> String {
+        let source = "macos.stt.\(activeRouteProvider)"
+        guard let sttError = error as? STTAdapterError else {
+            reportCoreErrorEvent(
+                source: source,
+                code: "unknown_transcription_error",
+                message: error.localizedDescription
+            )
+            return "unknown_transcription_error"
+        }
+
+        switch sttError {
+        case .noSpeechDetected:
+            reportCoreErrorEvent(
+                source: source,
+                code: "no_speech_detected",
+                message: "No speech detected in capture payload."
+            )
+            return "no_speech_detected"
+
+        case .missingRecordingFile:
+            reportCoreErrorEvent(
+                source: source,
+                code: "missing_recording_file",
+                message: "Capture did not provide a recording file URL for STT."
+            )
+            return "missing_recording_file"
+
+        case .speechPermissionDenied:
+            reportCorePermissionEvent(
+                source: source,
+                permission: "speech_recognition",
+                status: "denied",
+                detail: "Speech recognizer authorization is not granted."
+            )
+            reportCoreErrorEvent(
+                source: source,
+                code: "speech_permission_denied",
+                message: "Speech recognition permission denied."
+            )
+            emitTelemetry(
+                category: "permission",
+                action: "speech_recognition_request",
+                status: "denied",
+                context: ["provider": activeRouteProvider]
+            )
+            return "speech_permission_denied"
+
+        case .recognizerUnavailable:
+            reportCoreErrorEvent(
+                source: source,
+                code: "recognizer_unavailable",
+                message: "Speech recognizer unavailable for locale \(settingsController.locale.rawValue)."
+            )
+            return "recognizer_unavailable"
+
+        case let .recognitionFailed(detail):
+            reportCoreErrorEvent(
+                source: source,
+                code: "recognition_failed",
+                message: detail
+            )
+            return "recognition_failed"
+        }
+    }
+
+    private func fail(_ reason: String, reportCoreError: Bool = true) {
         abortQueuedAndRunningToolInvocations(reason: "pipeline_failed_\(reason)", originDomainEventID: 0)
         _ = coreBridge.dictationFail(reason)
         persistSessionRecord(
@@ -487,11 +558,13 @@ final class TechnicalE2EPipeline: ObservableObject {
             errorCode: reason,
             injectionDisposition: nil
         )
-        reportCoreErrorEvent(
-            source: "macos.technical_e2e",
-            code: reason,
-            message: "Technical E2E flow failed"
-        )
+        if reportCoreError {
+            reportCoreErrorEvent(
+                source: "macos.technical_e2e",
+                code: reason,
+                message: "Technical E2E flow failed"
+            )
+        }
         setPhase("failed", trigger: "failure", status: "error")
         isTranscribing = false
         refreshDictationState()

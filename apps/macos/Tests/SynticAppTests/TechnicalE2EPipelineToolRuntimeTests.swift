@@ -53,7 +53,57 @@ final class TechnicalE2EPipelineToolRuntimeTests: XCTestCase {
         XCTAssertTrue(logContents.contains("\"intentKind\":\"save_note\""))
     }
 
-    private func makeFixture(transcript: String) -> PipelineFixture {
+    func testSTTSpeechPermissionDeniedReportsStructuredCorePermissionAndError() async {
+        let fixture = makeFixture(
+            transcript: "ignored",
+            localSttAdapter: ImmediateFailureSTTAdapter(error: STTAdapterError.speechPermissionDenied)
+        )
+        defer { fixture.cleanup() }
+
+        fixture.pipeline.triggerHotkeyAction()
+        let reachedListening = await waitUntil(timeoutMs: 2_500) { fixture.pipeline.phase == "listening" }
+        XCTAssertTrue(reachedListening)
+
+        fixture.pipeline.triggerHotkeyAction()
+        let reachedFailed = await waitUntil(timeoutMs: 4_000) { fixture.pipeline.phase == "failed" }
+        XCTAssertTrue(reachedFailed)
+
+        let speechPermissionEvent = fixture.coreBridge.reportedPermissionEvents.first {
+            $0.permission == "speech_recognition" && $0.status == "denied"
+        }
+        XCTAssertNotNil(speechPermissionEvent)
+        XCTAssertEqual(speechPermissionEvent?.source, "macos.stt.apple_speech_recognizer")
+
+        let sttErrorEvent = fixture.coreBridge.reportedErrorEvents.first {
+            $0.code == "speech_permission_denied"
+        }
+        XCTAssertNotNil(sttErrorEvent)
+        XCTAssertEqual(sttErrorEvent?.source, "macos.stt.apple_speech_recognizer")
+    }
+
+    func testConfirmReviewSucceedsWithClipboardFallbackInjection() async throws {
+        let fixture = makeFixture(
+            transcript: "save note fallback path",
+            textInjectionAdapter: ClipboardFallbackTextInjectionAdapter()
+        )
+        defer { fixture.cleanup() }
+
+        let reachedReview = await drivePipelineToReviewingState(fixture.pipeline)
+        XCTAssertTrue(reachedReview)
+
+        fixture.pipeline.confirmReview()
+
+        let reachedIdle = await waitUntil(timeoutMs: 5_000) { fixture.pipeline.phase == "idle" }
+        XCTAssertTrue(reachedIdle)
+        XCTAssertTrue(fixture.pipeline.latestInjectionSummary.contains("disposition=clipboard_fallback"))
+        XCTAssertTrue(fixture.pipeline.latestInjectionSummary.contains("method=Clipboard"))
+    }
+
+    private func makeFixture(
+        transcript: String,
+        localSttAdapter: STTTranscribing? = nil,
+        textInjectionAdapter: TextInjecting = SuccessfulTextInjectionAdapter()
+    ) -> PipelineFixture {
         let rootURL = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
             .appendingPathComponent("syntic-tests-\(UUID().uuidString)", isDirectory: true)
         let toolExecutor = FileBackedToolExecutor(rootDirectoryURL: rootURL)
@@ -68,15 +118,16 @@ final class TechnicalE2EPipelineToolRuntimeTests: XCTestCase {
             sessionHistoryController: sessionHistoryController,
             audioAdapter: FakeAudioCaptureAdapter(),
             hotkeyAdapter: NoopHotkeyAdapter(),
-            localSttAdapter: ImmediateSuccessSTTAdapter(transcript: transcript),
+            localSttAdapter: localSttAdapter ?? ImmediateSuccessSTTAdapter(transcript: transcript),
             cloudSttAdapter: ImmediateSuccessSTTAdapter(transcript: transcript, providerIdentifier: "openai_whisper"),
-            textInjectionAdapter: SuccessfulTextInjectionAdapter(),
+            textInjectionAdapter: textInjectionAdapter,
             toolExecutor: toolExecutor,
             telemetryLogger: InMemoryTelemetryLogger()
         )
 
         return PipelineFixture(
             pipeline: pipeline,
+            coreBridge: coreBridge,
             toolExecutor: toolExecutor,
             rootURL: rootURL
         )
@@ -113,6 +164,7 @@ final class TechnicalE2EPipelineToolRuntimeTests: XCTestCase {
 
 private struct PipelineFixture {
     let pipeline: TechnicalE2EPipeline
+    let coreBridge: FakeCoreBridge
     let toolExecutor: FileBackedToolExecutor
     let rootURL: URL
 
@@ -195,6 +247,8 @@ private final class FakeCoreBridge: SynticCoreVersionProviding {
     private var nextToolSignalID: UInt64 = 1
     private var domainEvents: [DomainEventRecord] = []
     private var toolSignals: [ToolRuntimeSignalRecord] = []
+    private(set) var reportedErrorEvents: [ReportedCoreErrorEvent] = []
+    private(set) var reportedPermissionEvents: [ReportedCorePermissionEvent] = []
 
     var isFFILinked: Bool {
         true
@@ -342,17 +396,25 @@ private final class FakeCoreBridge: SynticCoreVersionProviding {
     }
 
     func reportCoreErrorEvent(source: String, code: String, message: String) -> UInt8 {
-        _ = source
-        _ = code
-        _ = message
+        reportedErrorEvents.append(
+            ReportedCoreErrorEvent(
+                source: source,
+                code: code,
+                message: message
+            )
+        )
         return 0
     }
 
     func reportCorePermissionEvent(source: String, permission: String, status: String, detail: String) -> UInt8 {
-        _ = source
-        _ = permission
-        _ = status
-        _ = detail
+        reportedPermissionEvents.append(
+            ReportedCorePermissionEvent(
+                source: source,
+                permission: permission,
+                status: status,
+                detail: detail
+            )
+        )
         return 0
     }
 
@@ -479,6 +541,19 @@ private struct ToolRuntimeSignalRecord: Encodable {
     let origin_domain_event_id: UInt64
 }
 
+private struct ReportedCoreErrorEvent {
+    let source: String
+    let code: String
+    let message: String
+}
+
+private struct ReportedCorePermissionEvent {
+    let source: String
+    let permission: String
+    let status: String
+    let detail: String
+}
+
 private final class FakeAudioCaptureAdapter: AudioCapturing {
     var isCapturing: Bool = false
     private let durationMs: UInt32
@@ -556,6 +631,28 @@ private struct ImmediateSuccessSTTAdapter: STTTranscribing {
     }
 }
 
+private struct ImmediateFailureSTTAdapter: STTTranscribing {
+    let providerIdentifier: String
+    let error: Error
+
+    init(error: Error, providerIdentifier: String = "apple_speech_recognizer") {
+        self.providerIdentifier = providerIdentifier
+        self.error = error
+    }
+
+    func transcribe(
+        capture: AudioCaptureResult,
+        locale: String,
+        completion: @escaping (Result<STTTranscriptResult, Error>) -> Void
+    ) {
+        _ = capture
+        _ = locale
+        DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(30)) {
+            completion(.failure(error))
+        }
+    }
+}
+
 private struct SuccessfulTextInjectionAdapter: TextInjecting {
     func inject(text: String, strategy: TextInjectionStrategy, preferClipboardFor bundleIdentifier: String?) -> TextInjectionResult {
         _ = text
@@ -565,6 +662,19 @@ private struct SuccessfulTextInjectionAdapter: TextInjecting {
             disposition: .injected,
             method: .accessibility,
             detail: "test injection success"
+        )
+    }
+}
+
+private struct ClipboardFallbackTextInjectionAdapter: TextInjecting {
+    func inject(text: String, strategy: TextInjectionStrategy, preferClipboardFor bundleIdentifier: String?) -> TextInjectionResult {
+        _ = text
+        _ = strategy
+        _ = bundleIdentifier
+        return TextInjectionResult(
+            disposition: .clipboardFallback,
+            method: .clipboard,
+            detail: "forced fallback for smoke test"
         )
     }
 }
