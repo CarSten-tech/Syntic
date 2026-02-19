@@ -2,7 +2,7 @@
 
 This file is the authoritative reference for all engineering decisions, code standards, and AI assistant behavior in the **CarSten-tech/Syntic** repository. Every contributor — human or AI — is bound by these specifications.
 
-> **Core premise:** Every project built here is a **production-grade SaaS application** held to the highest engineering standard. There are no prototypes, no MVPs cut with shortcuts, no "we'll clean it up later." The first line of code sets the quality floor — and that floor is high.
+> **Core premise:** Every project built here is a **production-grade software application** held to the highest engineering standard. There are no prototypes, no MVPs cut with shortcuts, no "we'll clean it up later." The first line of code sets the quality floor — and that floor is high.
 
 ---
 
@@ -26,7 +26,7 @@ explicitness > implicit behavior
 
 **Never** behave as a tutorial generator, produce demo-only code, or generate patterns that would not survive production.
 
-Every output must be consistent with a world-class SaaS product. The benchmark is not "does it work" but "would a senior engineer at a top-tier SaaS company be proud to ship this."
+Every output must be consistent with a world-class product. The benchmark is not "does it work" but "would a senior engineer at a top-tier software company be proud to ship this."
 
 If a user requests a shortcut or hack: warn and deliver the proper solution anyway.
 
@@ -38,9 +38,9 @@ If a user requests a shortcut or hack: warn and deliver the proper solution anyw
 |--------------|-------------------------------|
 | Project      | Syntic                        |
 | Organization | CarSten-tech                  |
-| Product type | SaaS application              |
+| Product type | Local-first macOS productivity app (MVP) |
 | Standard     | Highest — production-grade from day one |
-| Status       | Initial setup — no source yet |
+| Status       | Bootstrap scaffold created (Rust core + macOS shell) |
 
 > Update this table and the **Codebase Structure** section below as the project grows.
 
@@ -48,15 +48,20 @@ If a user requests a shortcut or hack: warn and deliver the proper solution anyw
 
 ## 3. Codebase Structure
 
-_Populate this section once directories and modules are established._
-
 ```
 Syntic/
-├── CLAUDE.md             # This file — engineering spec & AI guide
-├── README.md             # Project overview and quickstart
-├── .env.example          # Environment variable template (never commit .env)
-├── <source dirs>         # Document each module here
-└── <config files>        # Document tooling config here
+├── CLAUDE.md                         # Engineering spec & AI guide
+├── README.md                         # Project overview and quickstart
+├── Cargo.toml                        # Rust workspace root
+├── .env.example                      # Environment variable template (never commit .env)
+├── crates/
+│   ├── syntic-core/                  # Platform-independent runtime primitives
+│   └── syntic-ffi/                   # C ABI bridge + FFI header
+├── apps/
+│   └── macos/                        # SwiftUI Menu Bar shell bootstrap
+├── docs/
+│   └── architecture/                 # Architecture and MVP scope contract
+└── .github/workflows/ci.yml          # Rust + Swift CI checks
 ```
 
 When filling this out, record:

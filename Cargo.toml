@@ -1,0 +1,22 @@
+[workspace]
+members = [
+  "crates/syntic-core",
+  "crates/syntic-ffi",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+authors = ["CarSten-tech"]
+repository = "https://github.com/CarSten-tech/Syntic"
+
+[workspace.lints.clippy]
+all = "warn"
+pedantic = "warn"
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+unused_crate_dependencies = "warn"

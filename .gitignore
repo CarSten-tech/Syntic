@@ -1,0 +1,18 @@
+# macOS
+.DS_Store
+
+# Rust
+/target
+Cargo.lock
+
+# SwiftPM
+.build/
+.swiftpm/
+
+# Xcode
+DerivedData/
+*.xcuserstate
+*.xcworkspace/xcuserdata/
+
+# Env
+.env
