@@ -13,5 +13,10 @@ struct SynticApp: App {
         Settings {
             SettingsView(coreBridge: coreBridge)
         }
+
+        Window("Spike Lab", id: "spike-lab") {
+            SpikeLabView()
+        }
+        .windowResizability(.contentSize)
     }
 }

@@ -29,6 +29,15 @@ cargo test --workspace --all-targets --all-features
 
 # Swift shell bauen
 swift build --package-path apps/macos
+
+# Spike 2 Finder-Selection Snapshot
+./scripts/spikes/spike-02-finder-selection.sh --label "Case 1"
+
+# Spike 3 STT-Messzeile loggen
+./scripts/spikes/spike-03-log-measurement.sh --provider sfspeech --seconds 2 --locale de-DE --noise quiet --first-latency-ms 180 --final-latency-ms 430 --quality 4
+
+# Spike 4 Notarization Preflight
+./scripts/spikes/spike-04-notarization-preflight.sh
 ```
 
 ## Nächste Schritte

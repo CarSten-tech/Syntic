@@ -2,6 +2,8 @@ import AppKit
 import SwiftUI
 
 struct ContentView: View {
+    @Environment(\.openWindow) private var openWindow
+
     let coreBridge: SynticCoreVersionProviding
 
     var body: some View {
@@ -22,6 +24,12 @@ struct ContentView: View {
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .lineLimit(3)
+
+            Divider()
+
+            Button("Spike Lab öffnen") {
+                openWindow(id: "spike-lab")
+            }
 
             Button("Beenden") {
                 NSApplication.shared.terminate(nil)

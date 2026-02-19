@@ -16,7 +16,7 @@ struct SettingsView: View {
             }
 
             Section("Nächster Schritt") {
-                Text("Vor Swift-Build zuerst `./scripts/build-ffi.sh` ausführen.")
+                Text("Vor Swift-Build zuerst `./scripts/build-ffi.sh` ausführen und anschließend Spike Lab testen.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
