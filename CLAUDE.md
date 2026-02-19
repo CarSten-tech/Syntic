@@ -234,17 +234,121 @@ APIs are public contracts. Design them to survive independent client evolution.
 
 ## 9. Frontend & UX
 
-Default to a modern, professional SaaS-grade UI. Never produce placeholder-looking work unless explicitly asked.
+Default to a modern, professional SaaS-grade UI. The benchmark is Stripe, Linear, Vercel, Notion. Never produce placeholder-looking work unless explicitly asked.
 
-### Requirements
+### Design System
 
-- Consistent spacing system (4px or 8px base grid)
-- Accessible color contrast (WCAG AA minimum)
-- Full keyboard navigation
-- All interactive states: loading, empty, error, success, disabled
-- Optimistic UI where the outcome is safe to assume
-- No layout shift on data load
-- Responsive at all viewport sizes
+- Use a **design token system** for all visual values — never hardcode raw hex, px, or rem values directly in component styles
+- Token categories: `color`, `spacing`, `typography`, `radius`, `shadow`, `z-index`, `transition`
+- All components must be built from the token set — no one-off magic values
+- Maintain a **component library** — never duplicate UI logic across features
+- Components must be self-contained: style, state, and behavior co-located
+
+### Spacing & Layout
+
+- Base grid: **8px** (4px allowed for micro-adjustments only)
+- Spacing scale: `4 · 8 · 12 · 16 · 24 · 32 · 48 · 64 · 96 · 128`
+- No arbitrary pixel values outside the scale
+- Use CSS logical properties (`padding-inline`, `margin-block`) for i18n-readiness
+- Layouts must not break at any viewport width between 320px and 2560px
+
+### Typography
+
+- Define a **type scale** — minimum: `xs · sm · base · lg · xl · 2xl · 3xl · 4xl`
+- One font family for UI, optionally a second for display/headings
+- Line length: 60–80 characters for body text (max `prose` width ~65ch)
+- Never use `font-size` below 12px
+- `font-weight` must come from the token system — no arbitrary values
+
+### Color System
+
+- Semantic color tokens required:
+  - `color-primary`, `color-primary-hover`, `color-primary-subtle`
+  - `color-danger`, `color-warning`, `color-success`, `color-info`
+  - `color-surface`, `color-surface-raised`, `color-surface-overlay`
+  - `color-text`, `color-text-secondary`, `color-text-disabled`
+  - `color-border`, `color-border-strong`
+- Never use raw hex values in component code — always reference tokens
+- WCAG AA contrast minimum for all text (4.5:1 normal, 3:1 large)
+- Design for **dark mode from the start** — token system must support it
+
+### Interactive States
+
+Every interactive element must implement all applicable states:
+
+| State      | Required for                         |
+|------------|--------------------------------------|
+| Default    | All                                  |
+| Hover      | Buttons, links, rows, cards          |
+| Focus      | All — visible ring, not just outline removal |
+| Active     | Buttons, clickable elements          |
+| Disabled   | Form fields, buttons                 |
+| Loading    | Buttons, forms, data-fetching areas  |
+| Error      | Form fields, async operations        |
+| Success    | Form submissions, async operations   |
+| Empty      | All lists, tables, dashboards        |
+
+**Never render a state that has no visual treatment.**
+
+### Forms
+
+- Every field requires a visible, persistent `<label>` — no placeholder-as-label
+- Validation is **inline** and **immediate on blur** (not only on submit)
+- Error messages appear directly below the offending field
+- Required fields must be marked explicitly
+- Submit buttons show loading state during async operations and are disabled during submission
+- Autofill must be supported (`autocomplete` attributes set correctly)
+- Tab order must be logical and complete
+
+### SaaS-Specific UI Patterns
+
+The following patterns must be implemented to SaaS production standard:
+
+**Data tables:**
+- Server-side pagination, sorting, filtering
+- Column selection / visibility toggle
+- Row-level actions (inline and bulk)
+- Empty state with contextual CTA
+- Loading skeleton (not spinner) for initial load
+
+**Dashboards:**
+- Skeleton loading — never blank-then-flash
+- Widgets must handle: loading / empty / error / data states independently
+- Metrics cards must clearly show label, value, unit, and trend
+
+**Settings pages:**
+- Grouped by domain (account, billing, team, integrations, etc.)
+- Each setting saves independently with inline feedback
+- Destructive actions (delete account, remove member) require explicit confirmation — separate confirm step, not just a dialog
+
+**Onboarding flows:**
+- Step indicator with completion state
+- Progress is preserved on reload
+- Each step validates before advancing
+- Skip options where appropriate
+
+**Notifications & Feedback:**
+- Toast/snackbar: transient, non-blocking, auto-dismiss (success: 3s, error: persistent until dismissed)
+- Modal: only for decisions that require full user attention; never for simple confirmations of non-destructive actions
+- Inline alerts: for persistent contextual warnings on a page
+- Do not stack more than 3 toasts simultaneously
+
+### Motion & Animation
+
+- Animation must be **purposeful** — communicates state change, hierarchy, or relationship
+- Duration scale: `75ms · 100ms · 150ms · 200ms · 300ms · 500ms` — nothing slower than 500ms for UI transitions
+- Easing: use `ease-out` for elements entering, `ease-in` for exiting, `ease-in-out` for position changes
+- Always implement `prefers-reduced-motion` — disable or reduce animations when set
+- No decorative animations that add no informational value
+
+### Accessibility (non-negotiable)
+
+- WCAG AA minimum — WCAG AAA where feasible
+- Full keyboard navigation for every interactive element
+- ARIA roles, labels, and live regions used correctly (not as a substitute for semantic HTML)
+- Semantic HTML first — ARIA only where native semantics are insufficient
+- Focus management on route changes and modal open/close
+- Screen reader tested on key user flows
 
 ---
 
@@ -287,7 +391,178 @@ Assume real production scale. Proactively flag performance risks during design.
 
 ---
 
-## 12. Development Workflow
+## 12. Multi-Tenancy
+
+Every application built here is a SaaS with multiple tenants. Tenant isolation is a hard architectural requirement, not a feature.
+
+### Data Isolation
+
+- Every tenant's data must be **physically or logically isolated** at the database level
+- Preferred strategy: **row-level isolation** with a non-nullable `tenant_id` foreign key on every tenant-scoped table, enforced via database-level Row Level Security (RLS) where the DB supports it
+- Alternative: **schema-per-tenant** (more isolation, higher ops overhead) — decide and document the strategy before writing the first table
+- Never query tenant-scoped data without an explicit `tenant_id` filter
+
+### Tenant Context
+
+- The current `tenant_id` must be resolved **at the request boundary** (from auth token, subdomain, or path) and injected into all downstream layers via context/DI
+- No component, service, or repository should accept a `tenant_id` as a caller-supplied parameter from untrusted input
+- Every authenticated request must have a verified tenant context before touching data
+
+### Cross-Tenant Protection
+
+- Automated tests must explicitly cover cross-tenant access attempts
+- Any query that could theoretically return data from another tenant is a **critical security bug**
+- Audit log every access to sensitive tenant data
+
+### Tenant-Aware Features
+
+- Rate limiting is per-tenant (not just per-IP)
+- Feature flags and plan limits are enforced per-tenant
+- Billing and usage metering is always tenant-scoped
+
+---
+
+## 13. Authentication & Authorization
+
+### Authentication
+
+- Session strategy must be decided explicitly: **JWT (stateless)** vs. **server-side sessions (stateful)**
+  - JWT: faster, stateless, but requires token revocation strategy (blocklist or short expiry + refresh)
+  - Server-side sessions: easier revocation, requires session store (Redis)
+- **Access tokens** must be short-lived (≤ 15 minutes)
+- **Refresh tokens** must be: long-lived, rotated on each use, stored securely (httpOnly cookie, not localStorage)
+- Passwords hashed with `bcrypt` (cost ≥ 12) or `argon2id` — never MD5, SHA-1, or unsalted hashes
+- MFA support must be designed for from the start (TOTP minimum)
+
+### Authorization
+
+- Use **Role-Based Access Control (RBAC)** as the baseline
+- Extend with **Attribute-Based Access Control (ABAC)** for resource-level permissions where RBAC is insufficient
+- Authorization checks happen in the **application layer**, not in controllers or the UI
+- Every API endpoint has an explicit authorization rule — no endpoint is implicitly public
+- Failed authorization returns `403 Forbidden`, not `404` (unless existence itself is sensitive)
+
+### Session Security
+
+- CSRF tokens required for all cookie-based sessions
+- `SameSite=Strict` or `SameSite=Lax` on all auth cookies
+- `Secure` flag mandatory in production
+- `HttpOnly` flag on all auth cookies (no JavaScript access)
+
+---
+
+## 14. Observability & Logging
+
+Production systems are only debuggable if they are observable. Observability is not added after the fact.
+
+### Structured Logging
+
+- All logs are **structured JSON** — no freeform string concatenation
+- Every log entry includes: `timestamp`, `level`, `service`, `traceId`, `tenantId` (where applicable), `userId` (where applicable), `message`, and context fields
+- Log levels used consistently:
+  - `ERROR` — unexpected failures requiring immediate attention
+  - `WARN` — recoverable issues, degraded state, deprecated usage
+  - `INFO` — significant business events (user signed up, payment processed)
+  - `DEBUG` — diagnostic detail, disabled in production by default
+
+### What to Log
+
+| Event                        | Level  |
+|------------------------------|--------|
+| Unhandled exceptions         | ERROR  |
+| External service failures    | ERROR  |
+| Auth failures (repeated)     | WARN   |
+| Slow queries (> threshold)   | WARN   |
+| Business events              | INFO   |
+| Request/response cycle       | DEBUG  |
+
+**Never log:** passwords, tokens, full credit card numbers, PII beyond what is operationally necessary.
+
+### Error Tracking
+
+- Integrate an error tracking service (e.g., Sentry) from day one
+- Every unhandled exception must produce a tracked error with full context
+- Errors are linked to deploys — correlation between new deploy and error spike must be visible
+
+### Metrics & Alerting
+
+- Track at minimum: request rate, error rate, p50/p95/p99 latency, queue depth, background job failure rate
+- Alerts are defined for: error rate spike, latency degradation, queue backup, low disk/memory
+- Dashboards exist before the product goes live — not retrofitted after an incident
+
+### Distributed Tracing
+
+- Every request carries a `traceId` propagated across service boundaries
+- Trace context is included in all log entries and error reports
+
+---
+
+## 15. Internationalisation (i18n)
+
+Design for internationalisation from the first line of UI code, even if only one language is launched initially. Retrofitting i18n is extremely costly.
+
+### Rules
+
+- **No hardcoded user-facing strings** anywhere in source code
+- All strings in an external translation file (e.g., `en.json`) keyed by semantic identifier
+- Never construct sentences by concatenating translated fragments — word order differs across languages
+- Use ICU message format for plurals, genders, and interpolations
+- Dates, times, numbers, and currencies formatted via `Intl` APIs — never manually formatted
+- Text containers must handle strings up to **40% longer** than English (German, Finnish, etc.)
+- RTL layout support must be considered in the component model from the start (`dir="rtl"`)
+- Never use emojis as the sole means of conveying information
+
+---
+
+## 16. Dependency Management
+
+### Rules
+
+- **Lockfiles are committed** and must not be bypassed (`package-lock.json`, `yarn.lock`, `poetry.lock`, etc.)
+- Direct dependencies are explicitly declared — do not rely on transitive dependencies
+- Dependencies have a clear justification for inclusion — no adding packages to solve trivial problems
+- Audit dependencies on every PR: `npm audit` / `pip-audit` / equivalent must be part of CI
+- No dependencies with known unresolved critical CVEs may be merged
+- Prefer smaller, focused packages over large all-in-one frameworks where the trade-off is justified
+
+### Update Policy
+
+- Dependencies are updated on a **scheduled cadence** (at minimum monthly), not only when breaking
+- Major version upgrades are treated as migration tasks — planned, tested, documented
+- Do not pin to exact versions without a documented reason — use range specifiers appropriately
+
+---
+
+## 17. CI/CD Pipeline
+
+### CI Requirements (must pass before merge)
+
+- Lint (zero warnings policy)
+- Type checking (zero errors)
+- Unit tests
+- Integration tests
+- Dependency audit (`audit --audit-level=high` minimum)
+- Build succeeds
+
+### CD Requirements
+
+- All deployments are automated — no manual `scp`, no manual restarts
+- Environment promotion: `dev → staging → production`
+- Staging must mirror production infrastructure
+- **Zero-downtime deployments** — rolling update or blue/green
+- Database migrations run automatically as part of the deploy pipeline, **before** the new code is activated
+- Every deploy is tagged with a version and linked to a git commit
+- Rollback procedure is documented and tested — not theoretical
+
+### Environment Parity
+
+- Production secrets never used in development or CI
+- Staging uses production-equivalent data volumes (anonymized/synthesized)
+- Configuration differences between environments are explicit and version-controlled
+
+---
+
+## 18. Development Workflow
 
 ### Branch Strategy
 
@@ -321,7 +596,7 @@ Follow [Conventional Commits](https://www.conventionalcommits.org/):
 
 ---
 
-## 13. Commands Reference
+## 19. Commands Reference
 
 > Populate these once the project stack is decided.
 
@@ -354,7 +629,7 @@ cp .env.example .env
 
 ---
 
-## 14. AI Assistant Behavior
+## 20. AI Assistant Behavior
 
 ### Response Protocol
 
@@ -394,7 +669,7 @@ Warn the user, then provide the architecturally correct solution. Never silently
 
 ---
 
-## 15. Anti-Patterns Reference
+## 21. Anti-Patterns Reference
 
 These patterns are banned in this codebase regardless of context:
 
@@ -414,7 +689,7 @@ These patterns are banned in this codebase regardless of context:
 
 ---
 
-## 16. Technology Defaults
+## 22. Technology Defaults
 
 When the stack is unspecified, default to:
 
@@ -428,7 +703,7 @@ When the stack is unspecified, default to:
 
 ---
 
-## 17. Maintaining This File
+## 23. Maintaining This File
 
 Update this file when:
 
