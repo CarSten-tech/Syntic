@@ -248,8 +248,8 @@ Der MVP gilt als abgeschlossen wenn **alle** folgenden Kriterien erfüllt sind:
 ### Funktional
 - [ ] Flow Dictation funktioniert in mindestens 10 verschiedenen macOS-Apps (Browser, Mail, Slack, Terminal, Notion, etc.)
 - [ ] Clipboard-Fallback funktioniert korrekt wenn Accessibility-Berechtigung fehlt
-- [ ] Command Mode erkennt alle 8 Tool-Intents korrekt auf DE und EN (Testmatrix vorhanden)
-- [ ] Alle 9 Tools führen ihre Aktionen korrekt aus und zeigen Bestätigungsdialog
+- [ ] Command Mode erkennt alle 11 Tool-Intents korrekt auf DE und EN (Testmatrix vorhanden)
+- [ ] Alle 11 Tools führen ihre Aktionen korrekt aus und zeigen Bestätigungsdialog
 - [ ] STT-Provider-Wechsel funktioniert ohne App-Neustart
 - [ ] LLM-Provider-Wechsel funktioniert ohne App-Neustart
 - [ ] API-Key wird korrekt im Keychain gespeichert und nie in Logs ausgegeben (verifizierbarer Test)
