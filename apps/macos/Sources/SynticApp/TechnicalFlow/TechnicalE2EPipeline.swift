@@ -12,6 +12,7 @@ final class TechnicalE2EPipeline: ObservableObject {
     @Published private(set) var coreEventsJSON = "{\"events\":[]}"
     @Published private(set) var domainEventsJSON = "{\"events\":[]}"
     @Published private(set) var toolRuntimeSignalsJSON = "{\"signals\":[]}"
+    @Published private(set) var toolRuntimeQueueJSON = "{\"pending\":[],\"running\":[],\"completed\":[],\"cancelled\":[],\"failed\":[]}"
     @Published private(set) var dictationStateJSON = "{}"
     @Published private(set) var telemetryLogPath = "-"
     @Published private(set) var logs: [String] = []
@@ -33,6 +34,13 @@ final class TechnicalE2EPipeline: ObservableObject {
     private var activeRouteProvider = "unknown"
     private var lastSeenDomainEventID: UInt64 = 0
     private var lastSeenToolRuntimeSignalID: UInt64 = 0
+    private var nextToolInvocationOrdinal: UInt64 = 1
+    private var pendingToolInvocations: [ToolInvocation] = []
+    private var runningToolInvocationTasks: [String: Task<Void, Never>] = [:]
+    private var runningToolInvocationStartedAtMs: [String: UInt64] = [:]
+    private var completedToolInvocationIDs: [String] = []
+    private var cancelledToolInvocationIDs: [String] = []
+    private var failedToolInvocationIDs: [String] = []
 
     init(
         coreBridge: SynticCoreVersionProviding,
@@ -61,6 +69,7 @@ final class TechnicalE2EPipeline: ObservableObject {
         _ = coreBridge.domainEventsClear()
         refreshCoreEventsFeed()
         refreshDomainAndToolRuntimeFeeds()
+        refreshToolRuntimeQueueSnapshot()
         emitTelemetry(
             category: "e2e_flow",
             action: "pipeline_initialized",
@@ -75,6 +84,9 @@ final class TechnicalE2EPipeline: ObservableObject {
     }
 
     deinit {
+        for task in runningToolInvocationTasks.values {
+            task.cancel()
+        }
         hotkeyAdapter.stopListening()
         _ = audioAdapter.stopCapture()
     }
@@ -168,6 +180,8 @@ final class TechnicalE2EPipeline: ObservableObject {
             return
         }
 
+        refreshDomainAndToolRuntimeFeeds()
+
         persistSessionRecord(
             outcome: .confirmed,
             transcript: confirmedTranscript,
@@ -231,6 +245,10 @@ final class TechnicalE2EPipeline: ObservableObject {
         activeSessionStartedAtMs = Self.nowMs()
         activeRouteProvider = restoredRecord.routeProvider
         setPhase("reviewing", trigger: "undo_last_confirmed")
+        enqueuePendingToolInvocation(
+            transcript: restoredRecord.transcript,
+            origin: "undo_restore"
+        )
         refreshDictationState()
         emitTelemetry(
             category: "undo",
@@ -407,6 +425,10 @@ final class TechnicalE2EPipeline: ObservableObject {
             }
 
             setPhase("reviewing", trigger: "transcription_completed", valueMs: transcriptResult.latencyMs)
+            enqueuePendingToolInvocation(
+                transcript: transcriptResult.transcript,
+                origin: "transcription_completed"
+            )
             refreshDictationState()
             emitTelemetry(
                 category: "stt",
@@ -426,6 +448,7 @@ final class TechnicalE2EPipeline: ObservableObject {
     }
 
     private func fail(_ reason: String) {
+        abortQueuedAndRunningToolInvocations(reason: "pipeline_failed_\(reason)", originDomainEventID: 0)
         _ = coreBridge.dictationFail(reason)
         persistSessionRecord(
             outcome: .failed,
@@ -537,22 +560,242 @@ final class TechnicalE2EPipeline: ObservableObject {
         if let toolSignals = decodeToolRuntimeSignals(from: toolSignalsPayload) {
             for signal in toolSignals {
                 lastSeenToolRuntimeSignalID = max(lastSeenToolRuntimeSignalID, signal.id)
-                appendLog(
-                    "Tool runtime signal consumed: id=\(signal.id), action=\(signal.action), reason=\(signal.reason)."
-                )
-                emitTelemetry(
-                    category: "tool_runtime",
-                    action: "signal_consumed",
-                    status: "ok",
-                    context: [
-                        "signal_id": "\(signal.id)",
-                        "action": signal.action,
-                        "reason": signal.reason,
-                        "origin_domain_event_id": "\(signal.originDomainEventID)",
-                    ]
-                )
+                consumeToolRuntimeSignal(signal)
             }
         }
+    }
+
+    private func consumeToolRuntimeSignal(_ signal: ToolRuntimeSignalEnvelope) {
+        appendLog(
+            "Tool runtime signal consumed: id=\(signal.id), action=\(signal.action), reason=\(signal.reason)."
+        )
+
+        switch signal.action {
+        case "abort_pending_tool_invocations":
+            abortQueuedAndRunningToolInvocations(
+                reason: signal.reason,
+                originDomainEventID: signal.originDomainEventID
+            )
+        case "commit_pending_tool_invocations":
+            startQueuedToolInvocations(
+                reason: signal.reason,
+                originDomainEventID: signal.originDomainEventID
+            )
+        default:
+            emitTelemetry(
+                category: "tool_runtime",
+                action: "signal_unknown",
+                status: "degraded",
+                context: [
+                    "signal_id": "\(signal.id)",
+                    "action": signal.action,
+                    "reason": signal.reason,
+                    "origin_domain_event_id": "\(signal.originDomainEventID)",
+                ]
+            )
+        }
+    }
+
+    private func enqueuePendingToolInvocation(transcript: String, origin: String) {
+        let normalizedTranscript = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedTranscript.isEmpty else {
+            return
+        }
+
+        let invocationID = "tool-\(nextToolInvocationOrdinal)"
+        nextToolInvocationOrdinal += 1
+
+        pendingToolInvocations.append(
+            ToolInvocation(
+                id: invocationID,
+                transcript: normalizedTranscript,
+                origin: origin,
+                queuedAtMs: Self.nowMs()
+            )
+        )
+
+        appendLog("Tool invocation queued: id=\(invocationID), origin=\(origin).")
+        emitTelemetry(
+            category: "tool_runtime",
+            action: "invocation_queued",
+            status: "ok",
+            context: [
+                "invocation_id": invocationID,
+                "origin": origin,
+                "queue_depth": "\(pendingToolInvocations.count)",
+            ]
+        )
+        refreshToolRuntimeQueueSnapshot()
+    }
+
+    private func startQueuedToolInvocations(reason: String, originDomainEventID: UInt64) {
+        let pendingCount = pendingToolInvocations.count
+        emitTelemetry(
+            category: "tool_runtime",
+            action: "commit_signal_consumed",
+            status: "ok",
+            context: [
+                "reason": reason,
+                "origin_domain_event_id": "\(originDomainEventID)",
+                "pending_count": "\(pendingCount)",
+            ]
+        )
+
+        guard pendingCount > 0 else {
+            appendLog("Tool runtime commit signal: no pending invocations.")
+            refreshToolRuntimeQueueSnapshot()
+            return
+        }
+
+        while !pendingToolInvocations.isEmpty {
+            let invocation = pendingToolInvocations.removeFirst()
+            let task = Task { @MainActor [weak self] in
+                guard let self else {
+                    return
+                }
+
+                do {
+                    try await Task.sleep(nanoseconds: 1_200_000_000)
+                    try Task.checkCancellation()
+
+                    let intentJSON = self.coreBridge.commandClassifyJSON(invocation.transcript)
+                    let safetyJSON = self.coreBridge.commandSafetyJSON(invocation.transcript)
+                    let latencyMs = self.runningInvocationLatencyMs(for: invocation.id)
+
+                    guard self.runningToolInvocationTasks.removeValue(forKey: invocation.id) != nil else {
+                        return
+                    }
+                    self.runningToolInvocationStartedAtMs.removeValue(forKey: invocation.id)
+                    self.completedToolInvocationIDs.append(invocation.id)
+                    self.appendLog(
+                        "Tool invocation completed: id=\(invocation.id), intent=\(Self.compactPreview(intentJSON))."
+                    )
+                    self.emitTelemetry(
+                        category: "tool_runtime",
+                        action: "invocation_completed",
+                        status: "ok",
+                        context: [
+                            "invocation_id": invocation.id,
+                            "origin": invocation.origin,
+                            "intent": Self.compactPreview(intentJSON),
+                            "safety": Self.compactPreview(safetyJSON),
+                        ],
+                        valueMs: latencyMs
+                    )
+                    self.refreshToolRuntimeQueueSnapshot()
+                } catch is CancellationError {
+                    guard self.runningToolInvocationTasks.removeValue(forKey: invocation.id) != nil else {
+                        return
+                    }
+                    self.runningToolInvocationStartedAtMs.removeValue(forKey: invocation.id)
+                    self.cancelledToolInvocationIDs.append(invocation.id)
+                    self.appendLog("Tool invocation cancelled: id=\(invocation.id).")
+                    self.emitTelemetry(
+                        category: "tool_runtime",
+                        action: "invocation_cancelled",
+                        status: "ok",
+                        context: [
+                            "invocation_id": invocation.id,
+                            "origin": invocation.origin,
+                        ]
+                    )
+                    self.refreshToolRuntimeQueueSnapshot()
+                } catch {
+                    guard self.runningToolInvocationTasks.removeValue(forKey: invocation.id) != nil else {
+                        return
+                    }
+                    self.runningToolInvocationStartedAtMs.removeValue(forKey: invocation.id)
+                    self.failedToolInvocationIDs.append(invocation.id)
+                    self.appendLog("Tool invocation failed: id=\(invocation.id), error=\(error.localizedDescription).")
+                    self.emitTelemetry(
+                        category: "tool_runtime",
+                        action: "invocation_failed",
+                        status: "error",
+                        context: [
+                            "invocation_id": invocation.id,
+                            "origin": invocation.origin,
+                            "error": error.localizedDescription,
+                        ]
+                    )
+                    self.refreshToolRuntimeQueueSnapshot()
+                }
+            }
+
+            runningToolInvocationTasks[invocation.id] = task
+            runningToolInvocationStartedAtMs[invocation.id] = Self.nowMs()
+            appendLog("Tool invocation started: id=\(invocation.id), origin=\(invocation.origin).")
+        }
+
+        refreshToolRuntimeQueueSnapshot()
+    }
+
+    private func abortQueuedAndRunningToolInvocations(reason: String, originDomainEventID: UInt64) {
+        let pendingCancelledCount = pendingToolInvocations.count
+        if pendingCancelledCount > 0 {
+            cancelledToolInvocationIDs.append(contentsOf: pendingToolInvocations.map(\.id))
+            pendingToolInvocations.removeAll()
+        }
+
+        let runningIDs = Array(runningToolInvocationTasks.keys)
+        for invocationID in runningIDs {
+            runningToolInvocationTasks[invocationID]?.cancel()
+            runningToolInvocationTasks.removeValue(forKey: invocationID)
+            runningToolInvocationStartedAtMs.removeValue(forKey: invocationID)
+            cancelledToolInvocationIDs.append(invocationID)
+        }
+
+        emitTelemetry(
+            category: "tool_runtime",
+            action: "abort_signal_consumed",
+            status: "ok",
+            context: [
+                "reason": reason,
+                "origin_domain_event_id": "\(originDomainEventID)",
+                "pending_cancelled_count": "\(pendingCancelledCount)",
+                "running_cancelled_count": "\(runningIDs.count)",
+            ]
+        )
+        appendLog(
+            "Tool runtime abort applied: pending=\(pendingCancelledCount), running=\(runningIDs.count), reason=\(reason)."
+        )
+        refreshToolRuntimeQueueSnapshot()
+    }
+
+    private func runningInvocationLatencyMs(for invocationID: String) -> UInt32? {
+        guard let startedAt = runningToolInvocationStartedAtMs[invocationID] else {
+            return nil
+        }
+        let now = Self.nowMs()
+        if now <= startedAt {
+            return 0
+        }
+        let delta = now - startedAt
+        return delta > UInt64(UInt32.max) ? UInt32.max : UInt32(delta)
+    }
+
+    private func refreshToolRuntimeQueueSnapshot() {
+        let snapshot = ToolRuntimeQueueSnapshot(
+            pending: pendingToolInvocations.map {
+                ToolInvocationSnapshot(
+                    id: $0.id,
+                    origin: $0.origin,
+                    transcript_length: $0.transcript.count,
+                    queued_at_ms: $0.queuedAtMs
+                )
+            },
+            running: runningToolInvocationTasks.keys.sorted(),
+            completed: completedToolInvocationIDs.suffix(20).map { $0 },
+            cancelled: cancelledToolInvocationIDs.suffix(20).map { $0 },
+            failed: failedToolInvocationIDs.suffix(20).map { $0 }
+        )
+        guard
+            let data = try? JSONEncoder().encode(snapshot),
+            let value = String(data: data, encoding: .utf8)
+        else {
+            toolRuntimeQueueJSON = "{\"pending\":[],\"running\":[],\"completed\":[],\"cancelled\":[],\"failed\":[]}"
+            return
+        }
+        toolRuntimeQueueJSON = value
     }
 
     private func decodeDomainEvents(from payload: String) -> [DomainEventEnvelope]? {
@@ -686,6 +929,37 @@ final class TechnicalE2EPipeline: ObservableObject {
     private static func nowMs() -> UInt64 {
         UInt64(Date().timeIntervalSince1970 * 1_000)
     }
+
+    private static func compactPreview(_ value: String, maxLength: Int = 120) -> String {
+        let sanitized = value.replacingOccurrences(of: "\n", with: " ")
+        guard sanitized.count > maxLength else {
+            return sanitized
+        }
+        let endIndex = sanitized.index(sanitized.startIndex, offsetBy: maxLength)
+        return "\(sanitized[sanitized.startIndex ..< endIndex])..."
+    }
+}
+
+private struct ToolInvocation {
+    let id: String
+    let transcript: String
+    let origin: String
+    let queuedAtMs: UInt64
+}
+
+private struct ToolRuntimeQueueSnapshot: Codable {
+    let pending: [ToolInvocationSnapshot]
+    let running: [String]
+    let completed: [String]
+    let cancelled: [String]
+    let failed: [String]
+}
+
+private struct ToolInvocationSnapshot: Codable {
+    let id: String
+    let origin: String
+    let transcript_length: Int
+    let queued_at_ms: UInt64
 }
 
 private struct DomainEventsPayload: Decodable {

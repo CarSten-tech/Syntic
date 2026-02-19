@@ -9,6 +9,7 @@ const DEFAULT_TOOL_SIGNAL_CAPACITY: usize = 256;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DomainEventName {
     DictationReviewCancelled,
+    DictationReviewConfirmed,
 }
 
 impl DomainEventName {
@@ -16,6 +17,7 @@ impl DomainEventName {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::DictationReviewCancelled => "dictation_review_cancelled",
+            Self::DictationReviewConfirmed => "dictation_review_confirmed",
         }
     }
 }
@@ -23,6 +25,11 @@ impl DomainEventName {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DomainEventPayload {
     DictationReviewCancelled {
+        source: String,
+        phase_before: String,
+        review_transcript_length: u32,
+    },
+    DictationReviewConfirmed {
         source: String,
         phase_before: String,
         review_transcript_length: u32,
@@ -40,6 +47,7 @@ pub struct DomainEvent {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolRuntimeAction {
     AbortPendingToolInvocations,
+    CommitPendingToolInvocations,
 }
 
 impl ToolRuntimeAction {
@@ -47,6 +55,7 @@ impl ToolRuntimeAction {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::AbortPendingToolInvocations => "abort_pending_tool_invocations",
+            Self::CommitPendingToolInvocations => "commit_pending_tool_invocations",
         }
     }
 }
@@ -114,6 +123,30 @@ impl DomainEventBus {
         self.push_tool_runtime_signal(
             ToolRuntimeAction::AbortPendingToolInvocations,
             "dictation_review_cancelled",
+            domain_event_id,
+        );
+
+        domain_event_id
+    }
+
+    pub fn record_dictation_review_confirmed(
+        &mut self,
+        source: &str,
+        phase_before: &str,
+        review_transcript_length: u32,
+    ) -> u64 {
+        let domain_event_id = self.push_domain_event(
+            DomainEventName::DictationReviewConfirmed,
+            DomainEventPayload::DictationReviewConfirmed {
+                source: source.to_owned(),
+                phase_before: phase_before.to_owned(),
+                review_transcript_length,
+            },
+        );
+
+        self.push_tool_runtime_signal(
+            ToolRuntimeAction::CommitPendingToolInvocations,
+            "dictation_review_confirmed",
             domain_event_id,
         );
 
@@ -215,6 +248,9 @@ mod tests {
                 assert_eq!(phase_before, "reviewing");
                 assert_eq!(*review_transcript_length, 18);
             }
+            DomainEventPayload::DictationReviewConfirmed { .. } => {
+                panic!("expected cancelled domain payload")
+            }
         }
 
         let signals = bus.tool_runtime_signals_since(0, 8);
@@ -238,5 +274,38 @@ mod tests {
         let signals = bus.tool_runtime_signals_since(0, 4);
         assert_eq!(signals.len(), 1);
         assert_eq!(signals[0].id, 1);
+    }
+
+    #[test]
+    fn review_confirm_event_enqueues_commit_signal() {
+        let mut bus = DomainEventBus::with_capacity(8, 8);
+        let event_id = bus.record_dictation_review_confirmed("ffi.dictation", "reviewing", 24);
+
+        let domain_events = bus.domain_events_since(0, 8);
+        assert_eq!(domain_events.len(), 1);
+        assert_eq!(domain_events[0].id, event_id);
+
+        match &domain_events[0].payload {
+            DomainEventPayload::DictationReviewConfirmed {
+                source,
+                phase_before,
+                review_transcript_length,
+            } => {
+                assert_eq!(source, "ffi.dictation");
+                assert_eq!(phase_before, "reviewing");
+                assert_eq!(*review_transcript_length, 24);
+            }
+            DomainEventPayload::DictationReviewCancelled { .. } => {
+                panic!("expected confirmed domain payload")
+            }
+        }
+
+        let signals = bus.tool_runtime_signals_since(0, 8);
+        assert_eq!(signals.len(), 1);
+        assert_eq!(signals[0].origin_domain_event_id, event_id);
+        assert_eq!(
+            signals[0].action,
+            ToolRuntimeAction::CommitPendingToolInvocations
+        );
     }
 }

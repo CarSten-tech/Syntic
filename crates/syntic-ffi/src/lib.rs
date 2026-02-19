@@ -243,6 +243,11 @@ fn domain_event_json(event: &DomainEvent) -> String {
             source,
             phase_before,
             review_transcript_length,
+        }
+        | DomainEventPayload::DictationReviewConfirmed {
+            source,
+            phase_before,
+            review_transcript_length,
         } => format!(
             "{{\"id\":{},\"timestamp_ms\":{},\"name\":\"{}\",\"source\":\"{}\",\"phase_before\":\"{}\",\"review_transcript_length\":{}}}",
             event.id,
@@ -667,9 +672,38 @@ pub extern "C" fn syntic_dictation_finalize_review(text: *const c_char) -> u8 {
 /// Returns a numeric FFI status code.
 #[unsafe(no_mangle)]
 pub extern "C" fn syntic_dictation_confirm() -> u8 {
-    with_runtime_mut("syntic_dictation_confirm", |runtime| {
-        runtime.dictation_session_mut().confirm()
-    }) as u8
+    let Ok(mut runtime) = runtime_mutex().lock() else {
+        return FfiStatusCode::Internal as u8;
+    };
+
+    let snapshot = runtime.dictation_session().snapshot();
+    let phase_before = snapshot.phase;
+    let review_transcript_length = snapshot.review_transcript.chars().count();
+    let review_transcript_length = u32::try_from(review_transcript_length).unwrap_or(u32::MAX);
+
+    match runtime.dictation_session_mut().confirm() {
+        Ok(()) => {
+            if phase_before == DictationPhase::Reviewing {
+                runtime.record_dictation_review_confirmed_domain_event(
+                    "ffi.dictation",
+                    phase_before.as_str(),
+                    review_transcript_length,
+                );
+            }
+            FfiStatusCode::Success as u8
+        }
+        Err(error) => {
+            runtime.record_error_event(
+                "ffi.dictation",
+                error.as_str(),
+                &format!(
+                    "Dictation transition failed in `syntic_dictation_confirm`: {}",
+                    error.as_str()
+                ),
+            );
+            map_transition_error(error) as u8
+        }
+    }
 }
 
 /// Cancels the current dictation session.
@@ -871,6 +905,42 @@ mod tests {
         let signals_text = signals_payload.to_str().expect("utf8");
         assert!(signals_text.contains("\"action\":\"abort_pending_tool_invocations\""));
         assert!(signals_text.contains("\"reason\":\"dictation_review_cancelled\""));
+
+        // SAFETY: `signals_pointer` came from `syntic_tool_runtime_signals_since_json`.
+        unsafe { syntic_string_free(signals_pointer) };
+    }
+
+    #[test]
+    fn review_confirm_emits_domain_event_and_tool_runtime_signal() {
+        let _guard = test_guard();
+        assert_eq!(syntic_dictation_reset(), 0);
+        assert_eq!(syntic_domain_events_clear(), 0);
+        assert_eq!(syntic_dictation_start(), 0);
+
+        let review = CString::new("hello confirm").expect("cstring");
+        assert_eq!(syntic_dictation_finalize_review(review.as_ptr()), 0);
+        assert_eq!(syntic_dictation_confirm(), 0);
+
+        let domain_events_pointer = syntic_domain_events_since_json(0, 16);
+        assert!(!domain_events_pointer.is_null());
+
+        // SAFETY: pointer returned by `syntic_domain_events_since_json` is a valid C string.
+        let domain_events_payload = unsafe { CStr::from_ptr(domain_events_pointer) };
+        let domain_events_text = domain_events_payload.to_str().expect("utf8");
+        assert!(domain_events_text.contains("\"name\":\"dictation_review_confirmed\""));
+        assert!(domain_events_text.contains("\"phase_before\":\"reviewing\""));
+
+        // SAFETY: `domain_events_pointer` came from `syntic_domain_events_since_json`.
+        unsafe { syntic_string_free(domain_events_pointer) };
+
+        let signals_pointer = syntic_tool_runtime_signals_since_json(0, 16);
+        assert!(!signals_pointer.is_null());
+
+        // SAFETY: pointer returned by `syntic_tool_runtime_signals_since_json` is a valid C string.
+        let signals_payload = unsafe { CStr::from_ptr(signals_pointer) };
+        let signals_text = signals_payload.to_str().expect("utf8");
+        assert!(signals_text.contains("\"action\":\"commit_pending_tool_invocations\""));
+        assert!(signals_text.contains("\"reason\":\"dictation_review_confirmed\""));
 
         // SAFETY: `signals_pointer` came from `syntic_tool_runtime_signals_since_json`.
         unsafe { syntic_string_free(signals_pointer) };

@@ -103,6 +103,19 @@ impl CoreRuntime {
         );
     }
 
+    pub fn record_dictation_review_confirmed_domain_event(
+        &mut self,
+        source: &str,
+        phase_before: &str,
+        review_transcript_length: u32,
+    ) {
+        self.domain_event_bus.record_dictation_review_confirmed(
+            source,
+            phase_before,
+            review_transcript_length,
+        );
+    }
+
     pub fn clear_domain_events(&mut self) {
         self.domain_event_bus.clear();
     }
@@ -127,7 +140,7 @@ impl CoreRuntime {
 #[cfg(test)]
 mod tests {
     use super::{CORE_VERSION, CoreRuntime};
-    use crate::domain::DomainEventPayload;
+    use crate::domain::{DomainEventPayload, ToolRuntimeAction};
     use crate::events::CoreEventPayload;
 
     #[test]
@@ -202,10 +215,47 @@ mod tests {
                 assert_eq!(phase_before, "reviewing");
                 assert_eq!(*review_transcript_length, 32);
             }
+            DomainEventPayload::DictationReviewConfirmed { .. } => {
+                panic!("expected cancelled payload")
+            }
         }
 
         let tool_signals = runtime.tool_runtime_signals_since(0, 8);
         assert_eq!(tool_signals.len(), 1);
         assert_eq!(tool_signals[0].origin_domain_event_id, domain_events[0].id);
+        assert_eq!(
+            tool_signals[0].action,
+            ToolRuntimeAction::AbortPendingToolInvocations
+        );
+    }
+
+    #[test]
+    fn runtime_exposes_review_confirm_domain_event_and_tool_signal() {
+        let mut runtime = CoreRuntime::new();
+        runtime.record_dictation_review_confirmed_domain_event("ffi.dictation", "reviewing", 14);
+
+        let domain_events = runtime.domain_events_since(0, 8);
+        assert_eq!(domain_events.len(), 1);
+        match &domain_events[0].payload {
+            DomainEventPayload::DictationReviewConfirmed {
+                phase_before,
+                review_transcript_length,
+                ..
+            } => {
+                assert_eq!(phase_before, "reviewing");
+                assert_eq!(*review_transcript_length, 14);
+            }
+            DomainEventPayload::DictationReviewCancelled { .. } => {
+                panic!("expected confirmed payload")
+            }
+        }
+
+        let tool_signals = runtime.tool_runtime_signals_since(0, 8);
+        assert_eq!(tool_signals.len(), 1);
+        assert_eq!(tool_signals[0].origin_domain_event_id, domain_events[0].id);
+        assert_eq!(
+            tool_signals[0].action,
+            ToolRuntimeAction::CommitPendingToolInvocations
+        );
     }
 }
