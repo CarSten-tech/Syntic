@@ -18,6 +18,15 @@ enum ToolExecutionOutcome: String {
     case rejected
 }
 
+enum DestructiveExecutionMode: String {
+    case dryRunOnly = "dry_run_only"
+    case allowExecution = "allow_execution"
+
+    static func fromEnvironment(_ environment: [String: String] = ProcessInfo.processInfo.environment) -> Self {
+        environment["SYNTIC_ALLOW_DESTRUCTIVE_EXECUTION"] == "1" ? .allowExecution : .dryRunOnly
+    }
+}
+
 struct ToolExecutionResult {
     let outcome: ToolExecutionOutcome
     let detail: String
@@ -38,12 +47,22 @@ final class FileBackedToolExecutor: ToolExecuting {
     let executionLogPath: String
 
     private let fileManager: FileManager
+    private let finderContextProvider: FinderContextProviding
+    private let destructiveExecutionMode: DestructiveExecutionMode
+
     private let executionLogURL: URL
     private let notesURL: URL
     private let timersURL: URL
 
-    init(fileManager: FileManager = .default, rootDirectoryURL: URL? = nil) {
+    init(
+        fileManager: FileManager = .default,
+        rootDirectoryURL: URL? = nil,
+        finderContextProvider: FinderContextProviding = MacOSFinderContextAdapter(),
+        destructiveExecutionMode: DestructiveExecutionMode = .fromEnvironment()
+    ) {
         self.fileManager = fileManager
+        self.finderContextProvider = finderContextProvider
+        self.destructiveExecutionMode = destructiveExecutionMode
 
         let root: URL
         if let rootDirectoryURL {
@@ -94,12 +113,10 @@ final class FileBackedToolExecutor: ToolExecuting {
                     detail: "Timer execution record persisted.",
                     artifactPath: timersURL.path
                 )
-            case "move_file", "rename_file":
-                result = ToolExecutionResult(
-                    outcome: .simulated,
-                    detail: "Destructive file operation is currently simulation-only.",
-                    artifactPath: nil
-                )
+            case "move_file":
+                result = try executeMoveFile(plan: plan)
+            case "rename_file":
+                result = try executeRenameFile(plan: plan)
             default:
                 result = ToolExecutionResult(
                     outcome: .rejected,
@@ -119,12 +136,216 @@ final class FileBackedToolExecutor: ToolExecuting {
             safetyDecision: plan.safetyDecision,
             destructive: plan.destructive,
             safetyReason: plan.safetyReason,
+            destructiveExecutionMode: destructiveExecutionMode.rawValue,
             outcome: result.outcome.rawValue,
             detail: result.detail,
             artifactPath: result.artifactPath
         )
         try appendNDJSON(value: logRecord, to: executionLogURL)
         return result
+    }
+
+    private func executeMoveFile(plan: ToolExecutionPlan) throws -> ToolExecutionResult {
+        guard let destinationURL = parsedDestinationDirectoryURL(from: plan.transcript) else {
+            return ToolExecutionResult(
+                outcome: .rejected,
+                detail: "Move rejected: destination path missing or unsupported.",
+                artifactPath: nil
+            )
+        }
+
+        var isDirectory: ObjCBool = false
+        guard fileManager.fileExists(atPath: destinationURL.path, isDirectory: &isDirectory), isDirectory.boolValue else {
+            return ToolExecutionResult(
+                outcome: .rejected,
+                detail: "Move rejected: destination directory does not exist (\(destinationURL.path)).",
+                artifactPath: destinationURL.path
+            )
+        }
+
+        let selection = resolveFinderSelection()
+        guard case let .success(selectedURLs) = selection else {
+            if case let .rejected(result) = selection {
+                return result
+            }
+            return ToolExecutionResult(
+                outcome: .rejected,
+                detail: "Finder selection unavailable.",
+                artifactPath: nil
+            )
+        }
+
+        let preview = selectedURLs
+            .map { "\($0.lastPathComponent) -> \(destinationURL.path)" }
+            .joined(separator: ", ")
+        if destructiveExecutionMode == .dryRunOnly {
+            return ToolExecutionResult(
+                outcome: .simulated,
+                detail: "Move simulated only. Set SYNTIC_ALLOW_DESTRUCTIVE_EXECUTION=1 to execute. \(preview)",
+                artifactPath: destinationURL.path
+            )
+        }
+
+        for sourceURL in selectedURLs {
+            let targetURL = destinationURL.appendingPathComponent(sourceURL.lastPathComponent, isDirectory: false)
+            try fileManager.moveItem(at: sourceURL, to: targetURL)
+        }
+
+        return ToolExecutionResult(
+            outcome: .executed,
+            detail: "Moved \(selectedURLs.count) item(s) to \(destinationURL.path).",
+            artifactPath: destinationURL.path
+        )
+    }
+
+    private func executeRenameFile(plan: ToolExecutionPlan) throws -> ToolExecutionResult {
+        guard let newName = parsedRenameTarget(from: plan.transcript) else {
+            return ToolExecutionResult(
+                outcome: .rejected,
+                detail: "Rename rejected: target name missing or invalid.",
+                artifactPath: nil
+            )
+        }
+
+        let selection = resolveFinderSelection()
+        guard case let .success(selectedURLs) = selection else {
+            if case let .rejected(result) = selection {
+                return result
+            }
+            return ToolExecutionResult(
+                outcome: .rejected,
+                detail: "Finder selection unavailable.",
+                artifactPath: nil
+            )
+        }
+
+        guard selectedURLs.count == 1 else {
+            return ToolExecutionResult(
+                outcome: .rejected,
+                detail: "Rename rejected: exactly one selected item required, got \(selectedURLs.count).",
+                artifactPath: nil
+            )
+        }
+
+        let sourceURL = selectedURLs[0]
+        let targetURL = sourceURL.deletingLastPathComponent().appendingPathComponent(newName, isDirectory: false)
+
+        if sourceURL.lastPathComponent == newName {
+            return ToolExecutionResult(
+                outcome: .simulated,
+                detail: "Rename skipped: selected item already has target name.",
+                artifactPath: sourceURL.path
+            )
+        }
+
+        if destructiveExecutionMode == .dryRunOnly {
+            return ToolExecutionResult(
+                outcome: .simulated,
+                detail: "Rename simulated only. Set SYNTIC_ALLOW_DESTRUCTIVE_EXECUTION=1 to execute. \(sourceURL.lastPathComponent) -> \(newName)",
+                artifactPath: sourceURL.path
+            )
+        }
+
+        try fileManager.moveItem(at: sourceURL, to: targetURL)
+        return ToolExecutionResult(
+            outcome: .executed,
+            detail: "Renamed \(sourceURL.lastPathComponent) to \(newName).",
+            artifactPath: targetURL.path
+        )
+    }
+
+    private func resolveFinderSelection() -> FinderSelectionResolution {
+        let snapshot = finderContextProvider.currentSelectionSnapshot()
+        guard snapshot.status == .ok else {
+            let detail = snapshot.errorMessage
+                ?? "Finder selection unavailable (\(snapshot.status.rawValue))."
+            return .rejected(
+                ToolExecutionResult(
+                    outcome: .rejected,
+                    detail: detail,
+                    artifactPath: nil
+                )
+            )
+        }
+
+        let selectedURLs = snapshot.selectedPaths
+            .map { URL(fileURLWithPath: $0) }
+            .filter { !$0.path.isEmpty }
+
+        guard !selectedURLs.isEmpty else {
+            return .rejected(
+                ToolExecutionResult(
+                    outcome: .rejected,
+                    detail: "Finder selection is empty.",
+                    artifactPath: nil
+                )
+            )
+        }
+        return .success(selectedURLs)
+    }
+
+    private func parsedDestinationDirectoryURL(from transcript: String) -> URL? {
+        guard let tail = capturedTail(afterAnyOf: [" to ", " nach "], in: transcript) else {
+            return nil
+        }
+
+        let destinationToken = sanitizeToken(tail)
+        guard !destinationToken.isEmpty else {
+            return nil
+        }
+
+        switch destinationToken.lowercased() {
+        case "desktop":
+            return fileManager.urls(for: .desktopDirectory, in: .userDomainMask).first
+        case "documents", "dokumente":
+            return fileManager.urls(for: .documentDirectory, in: .userDomainMask).first
+        case "downloads":
+            return fileManager.urls(for: .downloadsDirectory, in: .userDomainMask).first
+        default:
+            let expanded = (destinationToken as NSString).expandingTildeInPath
+            guard expanded.hasPrefix("/") else {
+                return nil
+            }
+            return URL(fileURLWithPath: expanded, isDirectory: true)
+        }
+    }
+
+    private func parsedRenameTarget(from transcript: String) -> String? {
+        guard let tail = capturedTail(afterAnyOf: [" to ", " zu ", " als "], in: transcript) else {
+            return nil
+        }
+
+        let candidate = sanitizeToken(tail)
+        guard !candidate.isEmpty else {
+            return nil
+        }
+
+        if candidate.contains("/") || candidate.contains(":") {
+            return nil
+        }
+        return candidate
+    }
+
+    private func capturedTail(afterAnyOf markers: [String], in text: String) -> String? {
+        for marker in markers {
+            if let range = text.range(of: marker, options: [.caseInsensitive]) {
+                return String(text[range.upperBound...])
+            }
+        }
+        return nil
+    }
+
+    private func sanitizeToken(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.hasPrefix("\""), let closingIndex = trimmed.dropFirst().firstIndex(of: "\"") {
+            let quoted = trimmed[trimmed.index(after: trimmed.startIndex) ..< closingIndex]
+            return String(quoted).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        if trimmed.hasPrefix("'"), let closingIndex = trimmed.dropFirst().firstIndex(of: "'") {
+            let quoted = trimmed[trimmed.index(after: trimmed.startIndex) ..< closingIndex]
+            return String(quoted).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return trimmed.trimmingCharacters(in: CharacterSet(charactersIn: ".,;:"))
     }
 
     private func ensureDirectories() throws {
@@ -191,6 +412,11 @@ final class FileBackedToolExecutor: ToolExecuting {
     }()
 }
 
+private enum FinderSelectionResolution {
+    case success([URL])
+    case rejected(ToolExecutionResult)
+}
+
 private struct ExecutionLogRecord: Codable {
     let invocationID: String
     let createdAtMs: UInt64
@@ -201,6 +427,7 @@ private struct ExecutionLogRecord: Codable {
     let safetyDecision: String
     let destructive: Bool
     let safetyReason: String
+    let destructiveExecutionMode: String
     let outcome: String
     let detail: String
     let artifactPath: String?
