@@ -467,3 +467,128 @@ Die Architektur ist in zwei strikt getrennte Schichten organisiert: den **plattf
 - **Redaction Layer:** Alle ausgehenden Log-Einträge durchlaufen einen Redaction-Filter, der bekannte PII-Muster (E-Mail, Name-Patterns, Pfade mit Home-Directory) durch Platzhalter ersetzt.
 - **Crash Reporting:** Opt-in bei Onboarding. Sentry oder äquivalent. Crash-Reports werden vor dem Senden lokal redaktiert (Stack Trace bleibt, User-Daten nicht). Im Sensitive Mode: kein Crash Reporting, immer.
 - **Performance-Metriken:** Lokale Messung von STT-Latenz, Intent-Erkennungslatenz, Tool-Ausführungsdauer — intern für Qualitätssicherung, nicht an externe Services gesendet außer bei explizitem Debug-Report durch Nutzer.
+
+---
+
+## 5. OS-Integrationsplan
+
+---
+
+### Phase 1 — macOS (MVP)
+
+macOS ist die einzige Zielplattform des MVP. Alle Integrationen werden hier vollständig und produktionsreif implementiert.
+
+**Globale Hotkeys**
+- Möglich: ja, vollständig
+- Mechanismus: CGEventTap mit `kCGHIDEventTap` — fängt Tastenereignisse systemweit ab, bevor sie die aktive App erreichen
+- Benötigte Permission: Input Monitoring (`com.apple.security.input-monitoring`) — muss vom Nutzer in Systemeinstellungen → Datenschutz → Eingabeüberwachung explizit erteilt werden; kein programmatischer Grant möglich
+- Risiko: Apple hat Input Monitoring 2019 eingeführt und seither mehrfach verschärft. Zukünftige macOS-Versionen könnten weitere Einschränkungen bringen. Keine App-Store-Distribution möglich, solange CGEventTap genutzt wird.
+- Fallback: Bei fehlender Permission läuft der Hotkey-Listener im degradierten Modus via `NSEvent.addLocalMonitorForEvents` — funktioniert nur, wenn die App selbst im Vordergrund ist
+
+**Systemweite Texteingabe (Text Injection)**
+- Möglich: ja, für die meisten Apps
+- Mechanismus: Accessibility API — `AXUIElementSetAttributeValue` mit `kAXValueAttribute` auf das fokussierte AX-Element des Zielprozesses; alternativ `CGEventPost` für Keystroke-Simulation
+- AX-API ist zuverlässiger für native Cocoa-Apps. CGEventPost ist breiter kompatibel (auch Electron), aber umgehbar durch Apps mit Custom Input Handling
+- Benötigte Permission: Accessibility (`com.apple.security.accessibility`) — Nutzer-Grant in Systemeinstellungen → Datenschutz → Bedienungshilfen
+- Bekannte Einschränkungen: Manche Electron-Apps (Figma, Linear) und sicherheitsgehärtete Apps (1Password, Banking-Apps) blockieren AX-Injection; Fallback ist Clipboard-Insert
+- Risiko: Apple kann AX-API-Verhalten in macOS-Updates ändern (ist historisch selten, aber nicht unmöglich)
+
+**Menu Bar**
+- Möglich: ja, vollständig, keine besonderen Permissions
+- Mechanismus: NSStatusItem mit eigenem NSMenu und Popover; App läuft als LSUIElement (kein Dock-Icon, kein App-Switcher-Eintrag) — Standard für Menu-Bar-Only-Apps (Bartender, Lungo, etc.)
+- App startet beim Login via LaunchAgent (`launchd` plist in `~/Library/LaunchAgents`)
+- Risiko: macOS Sonoma hat Menu-Bar-Icon-Sortierung und -Sichtbarkeit verändert; App muss robust mit eingeschränktem Menu-Bar-Platz umgehen
+
+**Finder-Selektion auslesen**
+- Möglich: ja, mit Einschränkungen
+- Mechanismus primär: AppleScript (`tell application "Finder" to get selection as alias list`) via NSAppleScript — liefert ausgewählte Dateipfade zuverlässig, wenn Finder geöffnet und fokussiert ist oder im Hintergrund läuft
+- Mechanismus alternativ: JXA (JavaScript for Automation) — identische Fähigkeiten, modernere Syntax
+- Benötigte Permission: Automation Permission für Finder-Zugriff (`NSAppleEventsUsageDescription`) — macOS fragt einmalig, Nutzer muss erteilen
+- Einschränkung: Wenn Finder nicht läuft oder keine Selektion hat, gibt AppleScript leere Liste zurück — kein Fehler, nur kein Kontext; UI handelt das als "kein Dateikontext"
+- Risiko: Sandbox-Einschränkungen würden AppleScript-Finder-Zugriff vollständig blockieren — ein weiterer Grund für Direct Distribution statt App Store
+
+**Background-Betrieb / Daemon**
+- Möglich: ja, vollständig
+- Mechanismus: LaunchAgent (User-Scope) als persistenter Hintergrundprozess; startet beim Login automatisch, wird von launchd neu gestartet bei Crash
+- Kein Elevated-Privilege-Daemon nötig — alle Operationen laufen im User-Kontext
+- App-Prozess selbst läuft permanent (Menu Bar), LaunchAgent ist derselbe Prozess
+
+**Sandbox & Notarization**
+- Entscheidung: kein App Store, Direct Distribution — App Store Sandbox ist unvereinbar mit CGEventTap, AX-Injection und AppleScript-Finder-Zugriff
+- Notarization ist trotzdem obligatorisch: Apple verlangt Notarization für alle macOS-Apps seit Catalina, andernfalls zeigt Gatekeeper eine Warnung
+- Hardened Runtime wird aktiviert: schränkt Code-Injection und dynamische Libraries ein; benötigte Entitlements werden minimal deklariert
+- Entitlements-Liste (minimal): `com.apple.security.device.audio-input`, `com.apple.security.temporary-exception.apple-events` (für Finder AppleScript), `com.apple.security.cs.allow-unsigned-executable-memory` nur falls für whisper.cpp Metal notwendig — wird im Notarization-Spike geprüft
+- Update-Mechanismus: Sparkle 2 mit EdDSA-Signierung; Delta-Updates; kein Silent Update — Nutzer wird informiert und bestätigt
+
+**Permissions-Staging (macOS):**
+- Mikrofon: wird beim ersten Diktat angefordert (nicht beim App-Start)
+- Input Monitoring: wird beim ersten Hotkey-Setup angefordert, mit Link zu Systemeinstellungen
+- Accessibility: wird beim ersten Diktat-Versuch in fremde App angefordert, mit erklärendem Dialog
+- Automation (Finder): wird beim ersten File-Command angefordert
+- Notifications: wird beim ersten Timer angefordert
+- Kein Permission-Bundling: jede Permission wird einzeln und erklärend angefordert, niemals zusammen auf einmal
+
+---
+
+### Phase 2 — Windows & Linux (nach MVP)
+
+**Windows**
+
+- **Globale Hotkeys:** `RegisterHotKey` Win32 API — möglich, zuverlässig, kein Elevated Privilege nötig. Konflikt-Handling bei bereits belegten Kombinationen via `GetLastError`. Qualität: hoch.
+- **Systemweite Texteingabe:** `SendInput` für Keystroke-Simulation (breit kompatibel) oder UI Automation (`IUIAutomation`) für direktere Feld-Injektion in UIA-kompatible Apps. `SendInput` ist der robustere Weg; UIA als Ergänzung für präzisere Injektion.
+- **Explorer-Selektion:** Shell API via `IShellWindows` + `IShellView` — COM-basiert, möglich ohne Elevated Privilege. Liefert selektierte Dateipfade aus dem aktiven Explorer-Fenster. Bekannt funktional (Tools wie Everything nutzen diesen Weg). Aufwandsniveau: mittel.
+- **Background Service:** Windows-Systemtray-App mit `NotifyIcon`; automatischer Start via Registry `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` oder Task Scheduler (kein Service, kein Elevated Privilege nötig).
+- **Signed Binaries:** Authenticode-Signierung obligatorisch — ohne Signierung zeigt Windows SmartScreen eine Warnung. Code Signing Certificate notwendig (EV-Zertifikat für sofortigen SmartScreen-Trust empfohlen).
+- **Update-Mechanismus:** WinSparkle mit Signatur-Verifikation; alternativ MSIX-Paket mit automatischen Updates via Windows Package Manager.
+- **Risiken:** Antivirus-Software kann CGEvent-ähnliche Low-Level-Hooks als verdächtig einstufen. Umgehung durch korrekte Signierung und Dokumentation.
+- **UX-Pattern:** System Tray Icon statt Menu Bar; gleiche Hotkey-Logik; Command Palette als separates Top-Level-Fenster (WinUI 3 `OverlappedPresenter` ohne Taskbar-Eintrag).
+
+**Linux**
+
+- **Globale Hotkeys (X11):** `XGrabKey` via Xlib — möglich, keine besonderen Rechte nötig. Gut etabliert.
+- **Globale Hotkeys (Wayland):** Nicht möglich ohne Compositor-Unterstützung. KDE bietet `org.kde.kglobalaccel` D-Bus Interface; GNOME hat kein stabiles äquivalentes Interface für Drittanbieter (Stand 2026). Wayland-Unterstützung wird als "experimental / best-effort" markiert; X11 ist primärer Support-Target für Phase 2.
+- **Systemweite Texteingabe (X11):** `XSendEvent` oder `xdotool`-äquivalente API — möglich. Zuverlässigkeit variiert je App.
+- **Systemweite Texteingabe (Wayland):** `xdg-desktop-portal` Input-Portal ist noch nicht stabil genug für zuverlässige Produktion (Stand 2026). Clipboard-Fallback als primärer Weg auf Wayland.
+- **Dateimanager-Selektion:** Keine standardisierte API. Nautilus (GNOME), Dolphin (KDE) und Thunar (XFCE) haben proprietäre D-Bus-Schnittstellen, die sich je Version ändern. Unterstützung wird als best-effort implementiert; manuelle Pfadeingabe bleibt immer verfügbar.
+- **Background:** systemd user service oder XDG-Autostart-Eintrag (`~/.config/autostart/`); beide ohne Root-Rechte nutzbar.
+- **Distribution:** AppImage (portable, keine Installation nötig) als primäres Format; Flatpak als Ergänzung (Sandbox-Einschränkungen müssen geprüft werden — Flatpak sandboxing kann XGrabKey einschränken).
+- **DE/WM-Variabilität:** Offizieller Support für GNOME und KDE Plasma. Andere DEs (XFCE, Hyprland, i3, etc.) werden nicht aktiv getestet, sollten aber funktionieren, soweit X11 genutzt wird.
+- **Risiken:** Desktop-Environment-Fragmentierung macht konsistente UX schwierig. Wayland-Transition ist im Gange und wird X11-basierten Ansatz langfristig ablösen — muss beobachtet und ggf. nachgezogen werden.
+- **UX-Pattern:** System Tray via libappindicator (GNOME) oder KStatusNotifierItem (KDE); gleiche Command-Palette-Logik als GTK4-Fenster.
+
+---
+
+### Phase 3 — Mobile (iOS & Android)
+
+**iOS**
+
+- **Systemweiter Hotkey:** Nicht möglich. iOS erlaubt Apps keinen systemweiten Keyboard-Input-Listener. Kein Äquivalent zu CGEventTap.
+- **Systemweites Diktat:** Nicht möglich als Hintergrundprozess. iOS Background-Audio ist auf aktive Audio-Sessions (Musikwiedergabe, VoIP) beschränkt; reines Lauschen auf Wörter im Hintergrund ist verboten.
+- **Keyboard Extension (PKInputViewController):** Möglich als Custom System Keyboard. Nutzer muss die Custom Keyboard in iOS Einstellungen aktivieren. Innerhalb von Apps mit Custom Keyboard: Diktat-Button in Tastatur → Sprachinput → Text wird in fokussiertes Feld eingefügt. Einschränkung: kein Netzwerkzugriff ohne "Vollzugriff erlauben" (Open Access), den viele Nutzer aus Datenschutzgründen verweigern. Konsequenz: Cloud-STT nur mit Open Access; SFSpeechRecognizer funktioniert ohne Open Access.
+- **AppIntents / Siri Shortcuts:** Möglich (iOS 16+). App registriert Intent-Typen (Timer setzen, Notiz erstellen, Datei teilen). Diese sind via Siri oder Shortcuts-App aufrufbar. Dies ist das primäre Äquivalent zum Command Mode auf iOS.
+- **Share Sheet Extension:** Möglich. Andere Apps können Dateien an die App teilen → File Actions wie auf Desktop. Ersetzt Finder-Kontext auf iOS.
+- **On-device STT:** SFSpeechRecognizer — gut integriert, privacy-freundlich, kein Open Access nötig.
+- **Background Limits:** Strikte iOS-Background-Policies. Timer-Zuverlässigkeit hängt von `BackgroundTasks`-Framework ab (BGTaskScheduler). Keine Garantie für sekundengeraue Ausführung.
+- **UX-Pattern:** Primäre App mit In-App Command Palette; Keyboard Extension für systemweites Diktat; AppIntents für Siri-Integration; Share Sheet für File Actions.
+- **Risiken:** Apple kann Keyboard Extensions oder AppIntent-Capabilities einschränken. Open Access bleibt eine UX-Hürde. STT-Qualität über SFSpeechRecognizer ist ausreichend, nicht optimal.
+
+**Android**
+
+- **Accessibility Service:** Möglich. Gibt systemweiten Zugriff auf fokussierte Felder, Input Events und `AccessibilityNodeInfo.ACTION_SET_TEXT` für Textinjektion. Nutzer muss in Android Einstellungen → Bedienungshilfen → App aktivieren. Hohe UX-Hürde; Google Play warnt Nutzer explizit bei Accessibility-Service-Apps. Risiko: Google Play könnte Accessibility-Service-Apps in Zukunft stärker einschränken.
+- **Custom IME (Alternative zu Accessibility Service):** Möglich. Nutzer stellt App als Standard-Tastatur ein. Volle Kontrolle über Text-Input im fokussierten Feld. Keine Google-Play-Warnung. Nachteil: Nutzer verliert Standard-Tastatur oder muss manuell wechseln — sehr hohe UX-Hürde.
+- **Empfehlung Android:** IME als primärer Ansatz für systemweites Diktat (höhere Akzeptanz bei Google Play), Accessibility Service als opt-in für erweiterte Command-Mode-Features. Klare Kommunikation beider Optionen im Onboarding.
+- **Overlay (TYPE_APPLICATION_OVERLAY):** Möglich mit `SYSTEM_ALERT_WINDOW` Permission. Nutzer muss in Einstellungen → Spezielle App-Zugriffe gewähren. Für schwebende Palette verwendbar, aber Google Play scannt diese Permission — App muss legitimen Use Case dokumentieren.
+- **Quick Tile (TileService):** Möglich, keine besondere Permission nötig. Nutzer zieht Quick-Settings-Tile in die Schnelleinstellungen. Primärer Trigger-Ersatz für Hotkey auf Android.
+- **Background Limits (Doze / App Standby):** Android Doze-Mode und App Standby schränken Background-Prozesse drastisch ein. Timer-Zuverlässigkeit erfordert `AlarmManager.setExactAndAllowWhileIdle` (funktioniert in Doze) oder `WorkManager` mit Exact Scheduling. Foreground Service mit Notification ist der einzige Weg für zuverlässigen Background-Betrieb — sichtbare Notification ist dabei obligatorisch.
+- **UX-Pattern:** Quick Tile als Hotkey-Äquivalent; IME für systemweites Diktat; In-App Palette; Share Intent für File Actions; Foreground Service für Timer-Zuverlässigkeit.
+- **Risiken:** Google Play Policy-Änderungen können Overlay und Accessibility Services weiter einschränken. Background-Execution ist auf Android fundamental schwieriger als auf Desktop.
+
+---
+
+### Phasen-Übersicht
+
+- **Phase 1 (MVP):** macOS — vollständig, produktionsreif, exzellent integriert
+- **Phase 2a:** Windows — globale Hotkeys, Text Injection via SendInput, Explorer-Selektion, Tray, Signierung
+- **Phase 2b:** Linux (X11) — globale Hotkeys, Text Injection, best-effort Dateimanager, AppImage/Flatpak; Wayland experimental
+- **Phase 3a:** iOS — Keyboard Extension, AppIntents (Siri), Share Sheet, SFSpeechRecognizer
+- **Phase 3b:** Android — IME + opt-in Accessibility Service, Quick Tile, Overlay, Foreground Service
