@@ -709,7 +709,7 @@ final class TechnicalE2EPipeline: ObservableObject {
                     self.emitTelemetry(
                         category: "tool_runtime",
                         action: "invocation_completed",
-                        status: "ok",
+                        status: executionResult.outcome == .rejected ? "degraded" : "ok",
                         context: [
                             "invocation_id": invocation.id,
                             "origin": invocation.origin,
@@ -717,6 +717,7 @@ final class TechnicalE2EPipeline: ObservableObject {
                             "safety_decision": invocation.safetyDecision,
                             "outcome": executionResult.outcome.rawValue,
                             "artifact_path": executionResult.artifactPath ?? "",
+                            "rejection_code": executionResult.rejectionCode ?? "",
                         ],
                         valueMs: latencyMs
                     )

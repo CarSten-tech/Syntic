@@ -35,6 +35,19 @@ struct ToolExecutionResult {
     let outcome: ToolExecutionOutcome
     let detail: String
     let artifactPath: String?
+    let rejectionCode: String?
+
+    init(
+        outcome: ToolExecutionOutcome,
+        detail: String,
+        artifactPath: String?,
+        rejectionCode: String? = nil
+    ) {
+        self.outcome = outcome
+        self.detail = detail
+        self.artifactPath = artifactPath
+        self.rejectionCode = rejectionCode
+    }
 }
 
 protocol ToolExecuting {
@@ -143,7 +156,8 @@ final class FileBackedToolExecutor: ToolExecuting {
             destructiveExecutionMode: destructiveExecutionMode.rawValue,
             outcome: result.outcome.rawValue,
             detail: result.detail,
-            artifactPath: result.artifactPath
+            artifactPath: result.artifactPath,
+            rejectionCode: result.rejectionCode
         )
         try appendNDJSON(value: logRecord, to: executionLogURL)
         return result
@@ -161,7 +175,8 @@ final class FileBackedToolExecutor: ToolExecuting {
             return ToolExecutionResult(
                 outcome: .rejected,
                 detail: "Move rejected: destination path missing or unsupported.",
-                artifactPath: nil
+                artifactPath: nil,
+                rejectionCode: "move_destination_missing"
             )
         }
 
@@ -170,7 +185,8 @@ final class FileBackedToolExecutor: ToolExecuting {
             return ToolExecutionResult(
                 outcome: .rejected,
                 detail: "Move rejected: destination directory does not exist (\(destinationURL.path)).",
-                artifactPath: destinationURL.path
+                artifactPath: destinationURL.path,
+                rejectionCode: "move_destination_not_directory"
             )
         }
 
@@ -182,12 +198,29 @@ final class FileBackedToolExecutor: ToolExecuting {
             return ToolExecutionResult(
                 outcome: .rejected,
                 detail: "Finder selection unavailable.",
-                artifactPath: nil
+                artifactPath: nil,
+                rejectionCode: "finder_selection_unavailable"
             )
         }
 
-        let preview = selectedURLs
-            .map { "\($0.lastPathComponent) -> \(destinationURL.path)" }
+        let operations = selectedURLs.map { sourceURL in
+            (
+                source: sourceURL,
+                target: destinationURL.appendingPathComponent(sourceURL.lastPathComponent, isDirectory: false)
+            )
+        }
+
+        if let conflictingOperation = operations.first(where: { fileManager.fileExists(atPath: $0.target.path) }) {
+            return ToolExecutionResult(
+                outcome: .rejected,
+                detail: "Move rejected: target already exists (\(conflictingOperation.target.path)).",
+                artifactPath: conflictingOperation.target.path,
+                rejectionCode: "move_target_exists"
+            )
+        }
+
+        let preview = operations
+            .map { "\($0.source.lastPathComponent) -> \($0.target.path)" }
             .joined(separator: ", ")
         if destructiveExecutionMode == .dryRunOnly {
             return ToolExecutionResult(
@@ -197,14 +230,33 @@ final class FileBackedToolExecutor: ToolExecuting {
             )
         }
 
-        for sourceURL in selectedURLs {
-            let targetURL = destinationURL.appendingPathComponent(sourceURL.lastPathComponent, isDirectory: false)
-            try fileManager.moveItem(at: sourceURL, to: targetURL)
+        var completedOperations: [(source: URL, target: URL)] = []
+        do {
+            for operation in operations {
+                try fileManager.moveItem(at: operation.source, to: operation.target)
+                completedOperations.append(operation)
+            }
+        } catch {
+            var rollbackFailed = false
+            for operation in completedOperations.reversed() {
+                do {
+                    try fileManager.moveItem(at: operation.target, to: operation.source)
+                } catch {
+                    rollbackFailed = true
+                }
+            }
+            let rollbackSuffix = rollbackFailed ? " Rollback failed for at least one item." : ""
+            return ToolExecutionResult(
+                outcome: .rejected,
+                detail: "Move execution failed: \(error.localizedDescription).\(rollbackSuffix)",
+                artifactPath: destinationURL.path,
+                rejectionCode: "move_execution_failed"
+            )
         }
 
         return ToolExecutionResult(
             outcome: .executed,
-            detail: "Moved \(selectedURLs.count) item(s) to \(destinationURL.path).",
+            detail: "Moved \(operations.count) item(s) to \(destinationURL.path).",
             artifactPath: destinationURL.path
         )
     }
@@ -218,7 +270,8 @@ final class FileBackedToolExecutor: ToolExecuting {
             return ToolExecutionResult(
                 outcome: .rejected,
                 detail: "Rename rejected: target name missing or invalid.",
-                artifactPath: nil
+                artifactPath: nil,
+                rejectionCode: "rename_target_missing"
             )
         }
 
@@ -226,7 +279,8 @@ final class FileBackedToolExecutor: ToolExecuting {
             return ToolExecutionResult(
                 outcome: .rejected,
                 detail: "Rename rejected: target name contains invalid path characters.",
-                artifactPath: nil
+                artifactPath: nil,
+                rejectionCode: "rename_target_invalid"
             )
         }
 
@@ -238,7 +292,8 @@ final class FileBackedToolExecutor: ToolExecuting {
             return ToolExecutionResult(
                 outcome: .rejected,
                 detail: "Finder selection unavailable.",
-                artifactPath: nil
+                artifactPath: nil,
+                rejectionCode: "finder_selection_unavailable"
             )
         }
 
@@ -246,7 +301,8 @@ final class FileBackedToolExecutor: ToolExecuting {
             return ToolExecutionResult(
                 outcome: .rejected,
                 detail: "Rename rejected: exactly one selected item required, got \(selectedURLs.count).",
-                artifactPath: nil
+                artifactPath: nil,
+                rejectionCode: "rename_selection_count_invalid"
             )
         }
 
@@ -269,7 +325,25 @@ final class FileBackedToolExecutor: ToolExecuting {
             )
         }
 
-        try fileManager.moveItem(at: sourceURL, to: targetURL)
+        if fileManager.fileExists(atPath: targetURL.path) {
+            return ToolExecutionResult(
+                outcome: .rejected,
+                detail: "Rename rejected: target already exists (\(targetURL.path)).",
+                artifactPath: targetURL.path,
+                rejectionCode: "rename_target_exists"
+            )
+        }
+
+        do {
+            try fileManager.moveItem(at: sourceURL, to: targetURL)
+        } catch {
+            return ToolExecutionResult(
+                outcome: .rejected,
+                detail: "Rename execution failed: \(error.localizedDescription).",
+                artifactPath: targetURL.path,
+                rejectionCode: "rename_execution_failed"
+            )
+        }
         return ToolExecutionResult(
             outcome: .executed,
             detail: "Renamed \(sourceURL.lastPathComponent) to \(newName).",
@@ -286,7 +360,8 @@ final class FileBackedToolExecutor: ToolExecuting {
                 ToolExecutionResult(
                     outcome: .rejected,
                     detail: detail,
-                    artifactPath: nil
+                    artifactPath: nil,
+                    rejectionCode: "finder_selection_unavailable"
                 )
             )
         }
@@ -300,7 +375,8 @@ final class FileBackedToolExecutor: ToolExecuting {
                 ToolExecutionResult(
                     outcome: .rejected,
                     detail: "Finder selection is empty.",
-                    artifactPath: nil
+                    artifactPath: nil,
+                    rejectionCode: "finder_selection_empty"
                 )
             )
         }
@@ -468,6 +544,7 @@ private struct ExecutionLogRecord: Codable {
     let outcome: String
     let detail: String
     let artifactPath: String?
+    let rejectionCode: String?
 }
 
 private struct TimerExecutionRecord: Codable {

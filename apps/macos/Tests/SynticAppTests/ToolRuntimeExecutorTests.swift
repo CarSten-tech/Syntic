@@ -35,6 +35,23 @@ final class ToolRuntimeExecutorTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.destinationFileURL.path))
     }
 
+    func testMoveFileRejectsWhenTargetAlreadyExists() throws {
+        let fixture = try makeMoveFixture(createDestinationConflict: true)
+        defer { fixture.cleanup() }
+
+        let executor = FileBackedToolExecutor(
+            rootDirectoryURL: fixture.runtimeRootURL,
+            finderContextProvider: StaticFinderContextProvider(snapshot: fixture.snapshot),
+            destructiveExecutionMode: .allowExecution
+        )
+        let result = try executor.execute(plan: fixture.plan)
+
+        XCTAssertEqual(result.outcome, .rejected)
+        XCTAssertEqual(result.rejectionCode, "move_target_exists")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.sourceFileURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.destinationFileURL.path))
+    }
+
     func testRenameFileAllowExecutionRenamesSingleSelection() throws {
         let fixture = try makeRenameFixture()
         defer { fixture.cleanup() }
@@ -77,6 +94,61 @@ final class ToolRuntimeExecutorTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: fileB.path))
     }
 
+    func testRenameFileRejectsWhenTargetAlreadyExists() throws {
+        let fixture = try makeRenameFixture(createTargetConflict: true)
+        defer { fixture.cleanup() }
+
+        let executor = FileBackedToolExecutor(
+            rootDirectoryURL: fixture.runtimeRootURL,
+            finderContextProvider: StaticFinderContextProvider(snapshot: fixture.snapshot),
+            destructiveExecutionMode: .allowExecution
+        )
+        let result = try executor.execute(plan: fixture.plan)
+
+        XCTAssertEqual(result.outcome, .rejected)
+        XCTAssertEqual(result.rejectionCode, "rename_target_exists")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.originalFileURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.renamedFileURL.path))
+    }
+
+    func testMovePreflightPreventsPartialExecutionWhenOneTargetConflicts() throws {
+        let rootURL = try makeTemporaryDirectory()
+        defer { cleanup(rootURL) }
+
+        let runtimeRoot = rootURL.appendingPathComponent("runtime", isDirectory: true)
+        let sourceDirectory = rootURL.appendingPathComponent("source", isDirectory: true)
+        let destinationDirectory = rootURL.appendingPathComponent("destination", isDirectory: true)
+        try FileManager.default.createDirectory(at: sourceDirectory, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: destinationDirectory, withIntermediateDirectories: true)
+
+        let sourceA = sourceDirectory.appendingPathComponent("a.txt", isDirectory: false)
+        let sourceB = sourceDirectory.appendingPathComponent("b.txt", isDirectory: false)
+        FileManager.default.createFile(atPath: sourceA.path, contents: Data("a".utf8))
+        FileManager.default.createFile(atPath: sourceB.path, contents: Data("b".utf8))
+        let conflictingTargetB = destinationDirectory.appendingPathComponent("b.txt", isDirectory: false)
+        FileManager.default.createFile(atPath: conflictingTargetB.path, contents: Data("existing".utf8))
+
+        let snapshot = makeSnapshot(selectedPaths: [sourceA.path, sourceB.path])
+        let executor = FileBackedToolExecutor(
+            rootDirectoryURL: runtimeRoot,
+            finderContextProvider: StaticFinderContextProvider(snapshot: snapshot),
+            destructiveExecutionMode: .allowExecution
+        )
+        let plan = makePlan(
+            intentKind: "move_file",
+            transcript: "move file to \(destinationDirectory.path)"
+        )
+
+        let result = try executor.execute(plan: plan)
+        XCTAssertEqual(result.outcome, .rejected)
+        XCTAssertEqual(result.rejectionCode, "move_target_exists")
+
+        // No partial move allowed: all sources remain in original directory.
+        XCTAssertTrue(FileManager.default.fileExists(atPath: sourceA.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: sourceB.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: destinationDirectory.appendingPathComponent("a.txt").path))
+    }
+
     func testStructuredMoveHintOverridesTranscriptFallback() throws {
         let fixture = try makeMoveFixture()
         defer { fixture.cleanup() }
@@ -110,7 +182,7 @@ final class ToolRuntimeExecutorTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.destinationFileURL.path))
     }
 
-    private func makeMoveFixture() throws -> MoveFixture {
+    private func makeMoveFixture(createDestinationConflict: Bool = false) throws -> MoveFixture {
         let rootURL = try makeTemporaryDirectory()
         let runtimeRootURL = rootURL.appendingPathComponent("runtime", isDirectory: true)
         let sourceDirectory = rootURL.appendingPathComponent("source", isDirectory: true)
@@ -121,6 +193,9 @@ final class ToolRuntimeExecutorTests: XCTestCase {
         let sourceFileURL = sourceDirectory.appendingPathComponent("report.txt", isDirectory: false)
         FileManager.default.createFile(atPath: sourceFileURL.path, contents: Data("payload".utf8))
         let destinationFileURL = destinationDirectory.appendingPathComponent("report.txt", isDirectory: false)
+        if createDestinationConflict {
+            FileManager.default.createFile(atPath: destinationFileURL.path, contents: Data("existing".utf8))
+        }
 
         let plan = makePlan(
             intentKind: "move_file",
@@ -138,7 +213,7 @@ final class ToolRuntimeExecutorTests: XCTestCase {
         )
     }
 
-    private func makeRenameFixture() throws -> RenameFixture {
+    private func makeRenameFixture(createTargetConflict: Bool = false) throws -> RenameFixture {
         let rootURL = try makeTemporaryDirectory()
         let runtimeRootURL = rootURL.appendingPathComponent("runtime", isDirectory: true)
         let sourceDirectory = rootURL.appendingPathComponent("rename", isDirectory: true)
@@ -147,6 +222,9 @@ final class ToolRuntimeExecutorTests: XCTestCase {
         let originalFileURL = sourceDirectory.appendingPathComponent("draft.txt", isDirectory: false)
         let renamedFileURL = sourceDirectory.appendingPathComponent("final.txt", isDirectory: false)
         FileManager.default.createFile(atPath: originalFileURL.path, contents: Data("payload".utf8))
+        if createTargetConflict {
+            FileManager.default.createFile(atPath: renamedFileURL.path, contents: Data("existing".utf8))
+        }
 
         let plan = makePlan(
             intentKind: "rename_file",
