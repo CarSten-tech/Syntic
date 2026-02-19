@@ -1311,55 +1311,28 @@ Eintrittsbedingung: Sensitive Mode ist stabil. BYOK-Infrastruktur ist erprobt.
 
 ---
 
-## 10. Rückfragen
+## 10. Entscheidungsprotokoll
 
-Priorisiert nach Einfluss auf Architekturentscheidungen, die nicht nachträglich geändert werden können. Fragen 1–5 müssen vor Beginn der Implementierung beantwortet sein. Fragen 6–15 können während des MVPs geklärt werden, sollten aber nicht bis zur Portierung offen bleiben.
+Alle architekturrelevanten Vorabfragen sind beantwortet. Dieses Protokoll ist verbindlich für alle Implementierungsentscheidungen. Abweichungen erfordern explizite Revision dieses Abschnitts.
 
----
-
-**Frage 1 — Teamgröße und Tech-Hintergrund**
-Wie groß ist das initiale Team, und was ist der primäre Hintergrund? Rust-erfahren, Swift-erfahren, oder beides? Die Antwort beeinflusst direkt den realistischen MVP-Scope und ob die FFI-Bridge Rust↔Swift machbar ist oder ob Tauri (Plan B) die ehrlichere Wahl wäre. Bei einem Team ohne Rust-Erfahrung ist der Architekturplan wie dokumentiert zu ambitioniert für 8 Wochen.
-
-**Frage 2 — Primäre Zielgruppe: Power User oder Enterprise, oder beides gleichzeitig?**
-Beide Zielgruppen haben denselben Funktionswunsch, aber verschiedene Kaufentscheidungen, Privacy-Anforderungen und Support-Erwartungen. Enterprise erfordert SSO, MDM, Audit-Logs und einen Admin-Panel-Prozess von Beginn an — nicht nur als Milestone 6. Wenn Enterprise von Tag 1 eine echte Zielgruppe ist, müssen User-Account-Strukturen und Tenant-Isolation schon im Core berücksichtigt werden.
-
-**Frage 3 — Monetarisierungsmodell**
-Perpetual License, Subscription (SaaS), oder Freemium? Das beeinflusst ob ein User-Account-System benötigt wird, ob Settings und History Cloud-synchronisiert werden sollen, und ob es einen eigenen Backend-Service geben wird. Ein reines BYOK-Modell ohne Backend ist technisch einfacher und Privacy-freundlicher — ist das die Richtung, oder ist ein eigenes User-Account-Backend geplant?
-
-**Frage 4 — macOS Mindestversion**
-macOS 13 (Ventura), 14 (Sonoma) oder 15 (Sequoia) als Minimum? Jede Version erweitert verfügbare APIs. AppIntents-Verbesserungen, neue AVFoundation-APIs und Performance-Verbesserungen in neueren Versionen können relevant sein. Jede höhere Mindestversion schließt Nutzer aus — aber zu niedrige Mindestversion bedeutet Workarounds für APIs, die ab einer bestimmten Version viel besser sind. Empfehlung aus Architektursicht: macOS 14 als Minimum.
-
-**Frage 5 — Sprachen im MVP: Deutsch, Englisch oder beide?**
-Betrifft STT-Qualität, LLM-Prompt-Design und UI-Lokalisierung. OpenAI Whisper ist multilinguale von Haus aus. SFSpeechRecognizer braucht explizite Locale-Konfiguration. LLM-Intent-Klassifikation in Deutsch ist leistungsfähiger als vor 2 Jahren, aber Prompts müssen explizit mehrsprachig ausgelegt werden. Falls nur Englisch im MVP: STT und LLM sind einfacher, aber der Architekt-Plan muss trotzdem i18n-ready sein. Falls Deutsch + Englisch von Anfang an: explizite STT-Locale-Routing-Logik einplanen.
+> Vollständige MVP-Scope-Ableitung: siehe `docs/architecture/mvp-scope.md`
 
 ---
 
-**Frage 6 — Notizen: Eigenes System oder Integration in bestehende Tools?**
-`NoteTool` schreibt aktuell eine Markdown-Datei in einen konfigurierten Ordner. Ist das ausreichend, oder ist Integration in Apple Notes, Obsidian, Notion oder Bear geplant? Jede Integration ist ein eigener Adapter mit eigener API/Authorisierung. Wenn das geplant ist: gehört es in den Core als austauschbarer Adapter, oder ins Plugin SDK (Milestone 5)? Empfehlung: Markdown-Datei im MVP, spätere Integrationen via Plugin.
-
-**Frage 7 — Kalender-Integration: Nur schreiben oder auch lesen?**
-Der aktuelle Plan sieht `ReminderTool` vor, das optional in den Kalender exportiert. Soll die App auch bestehende Kalender-Events lesen können (z. B. "Was ist mein nächster Termin?")? Das ist ein erheblicher Funktionssprung: es erfordert Kalender-Leseberechtigung, strukturierte Abfragen und einen weiteren LLM-Intent. Wenn ja: als eigenes Feature in Phase 2 planen, nicht als MVP-Scope.
-
-**Frage 8 — File-Actions: Lokales Dateisystem only oder auch Cloud-Speicher?**
-iCloud Drive, Dropbox und Google Drive erscheinen für den Nutzer als lokale Ordner (über ihre Desktop-Apps). Solange der Pfad innerhalb des User Home liegt, funktionieren die aktuell geplanten Tools damit implizit. Soll darüber hinaus explizite Cloud-API-Integration geplant werden (z. B. Dateien direkt in Google Drive hochladen ohne lokale Sync-App)? Das wäre ein eigener Adapter-Layer mit OAuth2-Flow — nicht trivial. Empfehlung: lokales Dateisystem only, Cloud über die jeweiligen Desktop-Sync-Clients.
-
-**Frage 9 — Multi-Device / Settings-Sync**
-Sollen Einstellungen, Hotkey-Konfiguration, Provider-Keys und History zwischen mehreren Geräten desselben Nutzers synchronisiert werden? Das erfordert entweder iCloud KeyValueStore / CloudKit (macOS-only, Privacy-freundlich) oder einen eigenen Backend-Service. Keys können aus Sicherheitsgründen nie unverschlüsselt in der Cloud gespeichert werden — iCloud Keychain Sync ist eine Option, aber gerätespezifische Keys wären sicherer. Falls kein Sync geplant: dokumentieren und kommunizieren.
-
-**Frage 10 — Datenschutzerklärung und GDPR-Compliance**
-Wenn die App in der EU vertrieben wird und Nutzungsdaten (Crash Reports, opt-in Telemetrie) erhebt, greifen GDPR-Pflichten. Mit dem aktuellen Design (alles lokal, opt-in Crash Reporting) ist die Datenschutzsituation gut. Wenn jedoch ein User-Account-System oder ein Admin-Panel hinzukommt (Milestone 6), entsteht eine Datenschutzpflicht mit Datenverarbeitung, Löschanfragen und Privacy Policy. Wer ist der Datenschutzverantwortliche, und ist ein Datenschutzbeauftragter notwendig (ab 250 Mitarbeiter oder bei regelmäßiger Verarbeitung sensibler Daten)?
-
-**Frage 11 — Open Source vs. Proprietär**
-Soll der Rust-Core oder Teile davon Open Source sein? Open Source kann Vertrauen bei Enterprise-Kunden und Security-Reviewern aufbauen (auditierbar). Gleichzeitig exponiert es Implementierungsdetails und erfordert Contributor-Licensing-Agreements. Wenn Open Source geplant ist: Lizenzentscheidung (MIT, Apache 2.0, AGPL) hat direkte Konsequenzen für Dependency-Wahl (keine GPL-Dependencies in proprietären Produkten).
-
-**Frage 12 — App-Name, Bundle-ID und Signing-Identity**
-Für Notarization und Keychain wird eine stabile Bundle-ID benötigt (z. B. `tech.carsten.syntic`). Diese kann nach der ersten Distribution nicht mehr geändert werden ohne User-Impact. Der Signing-Key (Apple Developer Certificate) muss sicher aufbewahrt werden — Verlust bedeutet neue Distribution ohne automatischen Update-Pfad. Ist die Apple Developer Account-Infrastruktur bereits vorhanden?
-
-**Frage 13 — STT-Kosten und Nutzungsvolumen**
-OpenAI Whisper API kostet pro Minute Audio. Bei intensiver Nutzung (Diktat mehrmals täglich) können monatliche Kosten für den Nutzer relevant werden. Soll die App dem Nutzer die Kosten transparent anzeigen (Nutzungsschätzung in Settings)? Oder wird ein eigenes Rate-Limiting eingebaut (z. B. maximale Nutzung pro Tag konfigurierbar)? Das beeinflusst das Settings-UI und die LLM-Orchestration-Logik.
-
-**Frage 14 — Scope der Dateioperationen: Wo ist die Grenze?**
-Der aktuelle Plan beinhaltet: Move, Copy, Rename, CreateDirectory, PDF-Merge (Phase 2), Media Convert (Phase 2). Nicht enthalten: Löschen (bewusst, wegen Irreversibilität), Archivieren (ZIP), Extrahieren, Batch-Umbenennen mit Muster. Wo ist die strategische Grenze? Ist die App ein "intelligenter Dateimanager" oder ein "Sprachassistent für häufige Dateiaufgaben"? Das beeinflusst Tool-Scope und LLM-Intent-Design erheblich.
-
-**Frage 15 — Feedback-Mechanismus für STT-Fehler**
-Was soll passieren, wenn die Transkription falsch ist und der Nutzer das merkt? Aktuell: Nutzer korrigiert manuell. Soll es einen expliziten "Korrigieren"-Flow geben (Dictation Indicator bleibt offen, Nutzer kann editieren bevor Injection)? Das würde die UX erheblich verbessern für fehleranfällige Sprach-Umgebungen (Akzent, Hintergrundgeräusch, Fachvokabular). Es würde aber auch die Dictation-Flow-Architektur komplexer machen. Empfehlung: MVP ohne Korrigier-Flow, aber als "Should Have" in M1-Stabilisierung einplanen.
+| # | Thema | Entscheidung | Architekturelle Konsequenz |
+|---|-------|--------------|---------------------------|
+| 1 | **Teamgröße** | Einzelentwickler / max. 2 Personen | MVP-Scope aggressiv eingrenzen. 8-Wochen-Plan nur realistisch mit klarer Feature-Grenze. FFI-Bridge Rust↔Swift ist machbar, aber kein Gold-Plating in Phase 1. |
+| 2 | **Zielgruppe** | Primär: Power User / Entwickler / Einzelanwender. Enterprise sekundär (spätere Milestones). | Kein Pflicht-Account, kein User-Backend, keine serverseitige Userverwaltung im MVP. Tenant-Isolation entfällt für MVP vollständig. |
+| 3 | **Monetarisierung** | MIT Open Source. Kein Paywall-Feature-Lock. Optional: Donations/Support/Plugins später. | Keine Backend-Abhängigkeit im MVP. BYOK ist verpflichtend, nicht optional. Keine Subscription-Infrastruktur notwendig. |
+| 4 | **macOS Mindestversion** | macOS 13 Ventura (13.7.x) | Capability-Fallbacks notwendig: Clipboard-Injection als Fallback wenn Accessibility Permission fehlt. Sonoma-spezifische APIs erst ab Milestone 1. |
+| 5 | **Sprachen im MVP** | Deutsch + Englisch gleichzeitig | Intent-Klassifikation sprachunabhängig (semantisches Embedding statt Regex). Explizites STT-Locale-Routing. LLM-Prompts mehrsprachig ausgelegt. |
+| 6 | **Notizen-System** | Lokale Markdown-Dateien in konfiguriertem Ordner | `NoteSaveAction` schreibt `.md`-Dateien. Keine externen API-Abhängigkeiten. Obsidian/Notion als Post-MVP Plugin. |
+| 7 | **Kalender-Scope** | Nur Erstellen (Reminders/Events). Kein Lesen. | `ReminderCreateAction` mit EventKit-Schreibberechtigung. Keine Kalender-Leseberechtigung wird angefordert. |
+| 8 | **Dateisystem-Scope** | Lokales Dateisystem only. Cloud via Desktop-Sync-Ordner implizit. | Keine OAuth2-Flows für Cloud-APIs. Pfad-Validierung bleibt auf User Home beschränkt. |
+| 9 | **Multi-Device Sync** | Kein Sync im MVP. App vollständig lokal. | Keine iCloud-/CloudKit-Abhängigkeit. Settings in lokalem `UserDefaults`/JSON. API-Keys im lokalen Keychain (nicht Keychain Sync). |
+| 10 | **GDPR / Datenschutz** | Kein personenbezogenes Datum verlässt das Gerät. Keine Serververarbeitung. | Keine GDPR-Verarbeitungsgrundlage notwendig. Privacy Policy: "keine Datenerhebung". Erst bei optionalem Sync (Post-MVP) überprüfen. |
+| 11 | **Lizenz** | Vollständig MIT Open Source | Keine proprietären Core-Module. Dependency-Audit auf GPL-Kompatibilität. Keine versteckten Features. Transparente Sicherheitsarchitektur. |
+| 12 | **Bundle-ID / Signing** | Noch nicht vorhanden. Registrierung vor erster öffentlicher Beta. | Bis zur Beta: Code-Signing mit lokalem Development-Zertifikat. Notarization-Prozess dokumentieren bevor Beta-Distribution. |
+| 13 | **STT-Kosten-Transparenz** | Verpflichtend in Settings: lokal vs. Cloud, geschätzte Kosten, aktives Modell. | Settings-UI erhält Cost-Estimation-Komponente. LLM-Orchestration tracked Nutzungsvolumen pro Session (nicht persistent). |
+| 14 | **Dateioperationen-Grenze** | Assistenz — kein Dateimanager-Ersatz. Zielgerichtete Aktionen, immer reversibel, keine Hintergrundüberwachung. | Kein Löschen, kein permanentes Watchen. Alle destruktiven Operationen (Move mit Überschreiben) erfordern explizite Bestätigung. |
+| 15 | **STT-Korrektur-Flow** | Bestandteil des MVP: sprechen → Vorschau → bestätigen → einfügen | Dictation-Indicator-Architektur muss Edit-State unterstützen. Kein direktes Injizieren ohne Bestätigung. Erhöht Zuverlässigkeit massiv.
