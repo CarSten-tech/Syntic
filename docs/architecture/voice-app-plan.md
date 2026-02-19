@@ -185,3 +185,96 @@ Sechs Kernflows decken den vollständigen Produktumfang ab. macOS ist jeweils di
 - Kein lokales STT-Modell verfügbar: Diktat-Feature deaktiviert mit klarem Hinweis und Link zu Modell-Download (Phase 2)
 - Kein lokales LLM verfügbar: Command Mode beschränkt auf regelbasierte Erkennung (Timer, Notiz, einfache File-Ops ohne NL-Verständnis)
 - Sensitive Mode versehentlich aktiviert: einfaches Deaktivieren möglich, kein Datenverlust
+
+---
+
+## 3. Technische Plattformstrategie
+
+Vier Kandidaten werden vollständig bewertet. Die Bewertungskriterien sind identisch für alle Optionen. Am Ende folgt eine explizite Entscheidung mit Begründung und Plan B.
+
+---
+
+### Kandidat A — Rust Core Library + Platform-Native UI Shells
+
+**Grundprinzip:** Ein in Rust geschriebener Core (Business Logic, Audio, STT, LLM, Tool Runtime, Datenhaltung) wird als native Bibliothek in plattformspezifische UI-Shells eingebunden. Auf macOS ist das SwiftUI + AppKit, auf Windows WinUI 3, auf Linux GTK4, auf iOS SwiftUI, auf Android Jetpack Compose.
+
+- **Globale Hotkeys:** Vollständig native Lösung pro Plattform. macOS: CGEventTap via Swift-Adapter, zuverlässigste Option ohne Sandbox-Einschränkungen. Windows: RegisterHotKey via Win32-Adapter. Linux X11: XGrabKey. Qualität: maximal.
+- **Systemweite Texteingabe:** macOS: Accessibility API direkt aus Swift-Adapter aufrufbar — kein Umweg. Windows: SendInput / UIA direkt. Qualität: maximal, weil kein Framework-Layer dazwischen.
+- **Finder/Explorer-Kontext:** macOS: AppleScript via NSAppleScript aus Swift-Adapter — direkte native Integration. Windows: Shell COM API aus WinUI-Adapter. Qualität: maximal.
+- **Background Services/Daemons:** macOS: LaunchAgent als eigenständiger Prozess, aus Swift-Shell gestartet und überwacht. Keine Framework-Einschränkungen. Qualität: maximal.
+- **Update-Mechanismus:** Sparkle Framework (macOS, etablierter Standard — Raycast, Alfred, etc.), WinSparkle (Windows), AppImageUpdate (Linux). Je Plattform bewährt, mit Delta-Updates und EdDSA-Signierung.
+- **Sicherheits- und Sandbox-Modell:** Hardened Runtime + Notarization auf macOS ohne App Store Sandbox. Entitlements werden minimal gesetzt. Rust-Core ist memory-safe by design. Kein Webview, kein JavaScript, keine zusätzliche Angriffsfläche.
+- **Wartbarkeit/Teamgröße:** Hoher initialer Aufwand: jede Plattform-UI-Shell ist separater Codestand. Für ein kleines Team (1–3 Personen) ist Phase 1 (macOS) sehr gut handhabbar; Phase 2 (Windows) erfordert substanzielle Zusatzarbeit. Long-term: wartbar, weil jede Schicht klar getrennt und testbar ist.
+- **macOS-Integrationsqualität:** Höchstmöglich. NSStatusItem, NSPanel, NSAppleScript, CGEventTap — alles direkt ohne Adapter-Overhead. App fühlt sich zu 100 % nativ an.
+
+**Gesamtbewertung:** Höchste Qualität und Sicherheit, höchster initialer Aufwand, klar definierter Portierungspfad. Für macOS-first die beste Wahl.
+
+---
+
+### Kandidat B — Tauri v2 (Rust + WebView)
+
+**Grundprinzip:** Rust-Backend für Logic und OS-Zugriff, WebView (WKWebView auf macOS, WebView2 auf Windows, WebKitGTK auf Linux) für UI. Tauri v2 unterstützt auch iOS und Android mit demselben Web-Frontend.
+
+- **Globale Hotkeys:** Tauri-Plugin vorhanden (tauri-plugin-global-shortcut). Auf macOS funktional, aber die Zuverlässigkeit in Edge-Cases (z. B. Gaming-VMs, bestimmte Fullscreen-Apps) ist schlechter dokumentiert als nativer CGEventTap. Funktional ausreichend für MVP.
+- **Systemweite Texteingabe:** Erfordert Custom Native Plugin (Rust + Swift-Bridge für macOS). Möglich, aber nicht out-of-the-box — jede Plattform braucht einen eigenen Plugin. Der Aufwand ist ähnlich wie bei Kandidat A, nur weniger direkt.
+- **Finder/Explorer-Kontext:** Ebenfalls Custom Native Plugin notwendig. Kein Vorteil gegenüber A, eher Nachteil wegen Plugin-Layer-Overhead.
+- **Background Services/Daemons:** Tauri unterstützt Background-Prozesse, aber die Kontrolle über LaunchAgents auf macOS liegt außerhalb des Frameworks — muss manuell gemacht werden. Kein Nachteil, nur expliziter Mehraufwand.
+- **Update-Mechanismus:** Tauri hat eingebautes Updater-System mit Signierung. Gut integriert, zuverlässig.
+- **Sicherheits- und Sandbox-Modell:** WebView ist eine signifikante zusätzliche Angriffsfläche. Content Security Policy muss sorgfältig konfiguriert werden. JavaScript-Bridge zum Rust-Backend ist ein kritischer Grenzpunkt, der explizite Validierung erfordert. Hardened Runtime + Notarization möglich, aber WebView-Entitlement erhöht Angriffsfläche.
+- **Wartbarkeit/Teamgröße:** Für web-affine Teams sehr produktiv — Frontend-Entwickler können sofort beitragen. Ein UI-Codestand für alle Plattformen. Langfristig: WebView-Updates (Chromium/WebKit) sind extern kontrolliert und können Verhalten ändern.
+- **macOS-Integrationsqualität:** Mittel. Menu Bar funktioniert, aber native Anmutung hängt stark von CSS-Qualität ab. Kein echtes NSPanel-Feeling out-of-the-box. Kann sehr gut werden, erfordert aber erheblichen CSS-Aufwand. Electron-artige Wahrnehmungsrisiken beim Nutzer.
+
+**Gesamtbewertung:** Guter Kompromiss für web-affine Teams. Schlechtere Sicherheitseigenschaften durch WebView-Layer. macOS-Integrationsqualität erreichbar, aber nicht automatisch. Geeignet als Plan B.
+
+---
+
+### Kandidat C — Flutter
+
+**Grundprinzip:** Dart als Sprache, eigene Rendering-Engine (Impeller/Skia), plattformübergreifendes UI-Framework. Platform Channels für native OS-Zugriffe.
+
+- **Globale Hotkeys:** Kein offizielles Plugin mit ausreichender macOS-Qualität. Community-Plugins existieren, sind aber nicht production-grade. Eigene Platform-Channel-Implementierung notwendig — ähnlicher Aufwand wie Kandidat A.
+- **Systemweite Texteingabe:** Platform Channel zu Swift/ObjC notwendig. Technisch machbar, aber jeder OS-Zugriff erfordert nativen Bridging-Code. Kein struktureller Vorteil gegenüber A.
+- **Finder/Explorer-Kontext:** Platform Channel notwendig. Identische Situation wie bei Text Injection.
+- **Background Services/Daemons:** Flutter-Apps haben keinen nativen Daemon-Support. Background-Prozess muss als separates Binary implementiert und aus dem Flutter-Prozess gestartet werden. Umständlich.
+- **Update-Mechanismus:** Kein eingebautes System. Externe Lösung (Sparkle, WinSparkle) notwendig. Mehr Eigenaufwand.
+- **Sicherheits- und Sandbox-Modell:** Flutter rendert in eigenes Canvas (kein WebView) — geringere Angriffsfläche als Tauri. Hardened Runtime + Notarization möglich. Platform Channels sind kritische Grenzpunkte wie bei Tauri.
+- **Wartbarkeit/Teamgröße:** Dart ist eine kleine Sprache mit kleiner Community im Desktop-Bereich. macOS-Desktop-Flutter ist wesentlich weniger battle-tested als mobil. Langfristig-Risiko: Flutter-Desktop ist bei Google nicht die primäre Zielplattform.
+- **macOS-Integrationsqualität:** Niedrig bis mittel. Flutter rendert alles selbst — Menu Bar, NSPanel, native Schriften, native Scroll-Physics sind allesamt Workarounds oder sehen subtil falsch aus. Für eine Productivity-App, die sich nativ anfühlen muss, ist das ein substanzielles Problem.
+
+**Gesamtbewertung:** Für mobile-first sinnvoll, für macOS-first Desktop-Anwendungen mit tiefer OS-Integration ungeeignet. Abgelehnt.
+
+---
+
+### Kandidat D — Qt 6
+
+**Grundprinzip:** C++ (oder Python via PyQt/PySide), eigene Rendering-Engine, reife Cross-Platform-Lösung, seit Jahrzehnten bewährt auf Desktop.
+
+- **Globale Hotkeys:** Qt hat QHotkey-ähnliche Lösungen, aber die macOS-Qualität ist weniger direkt als nativer CGEventTap. Funktional ausreichend.
+- **Systemweite Texteingabe:** QAccessibleBridge und plattformspezifische Erweiterungen notwendig. Technisch machbar.
+- **Finder/Explorer-Kontext:** macOS: QProcess + AppleScript-Aufruf. Unelegant, aber funktional.
+- **Background Services/Daemons:** Qt-Apps können als Daemon laufen, aber LaunchAgent-Verwaltung ist außerhalb von Qt. Kein Nachteil, expliziter Mehraufwand.
+- **Update-Mechanismus:** Qt Installer Framework oder externe Lösung. Komplex, veraltete UX.
+- **Sicherheits- und Sandbox-Modell:** Kein WebView per default — ähnlich sicher wie Kandidat A. C++ bringt jedoch Memory-Safety-Risiken, die Rust vermeidet. Hardened Runtime + Notarization möglich.
+- **Wartbarkeit/Teamgröße:** C++ ist schwer zu beherrschen, fehleranfällig. Python-Bindings (PyQt) sind lizenzrechtlich heikel (GPL vs. kommerziell). Qt-Lizenzkosten (kommerziell) sind erheblich. Langfristig: hohe Maintenance-Kosten.
+- **macOS-Integrationsqualität:** Mittel. Qt-Apps sehen auf macOS "fast nativ" aus, aber Details (Schrift-Rendering, native Dialoge, Dark Mode, Scroll-Physics) sind immer leicht off. Für eine Productivity-App ist das wahrnehmbar.
+
+**Gesamtbewertung:** Bewährt, aber für dieses Projekt nicht optimal. C++ Memory-Safety-Risiken, Lizenzkosten, suboptimale macOS-Anmutung. Abgelehnt.
+
+---
+
+### Entscheidung
+
+**Gewählt: Kandidat A — Rust Core Library + Platform-Native UI Shells.**
+
+Begründung:
+- macOS-first erfordert maximale native Integration — nur Kandidat A liefert das ohne Kompromisse
+- Rust-Core ist memory-safe, auditierbar und testbar ohne OS-Abhängigkeiten — ideal für Security-kritische Operationen (Audio-Buffer, Key-Handling, LLM-Client)
+- Der Core/Platform-Split ist strukturell erzwungen, nicht nur eine Konvention — Portierung auf Windows (Phase 2) bedeutet neue UI-Shell + vorhandener Core, kein Rewrite
+- Keine externe Rendering-Engine, kein WebView, keine JavaScript-Bridge — minimale Angriffsfläche
+- Langfristig: jede Schicht unabhängig testbar, austauschbar, skalierbar
+
+Akzeptierter Nachteil: Pro Plattform eine eigene UI-Shell. Für Phase 1 (macOS) ist das kein Problem. Phase 2 (Windows) erfordert dedizierte Ressourcen. Dieses Risiko ist bekannt und eingeplant.
+
+**Plan B: Kandidat B — Tauri v2.**
+
+Wenn das Team überwiegend web-affin ist und die Time-to-Market kritisch wird, ist Tauri v2 der sinnvolle Rückfall. Die Entscheidung zu Tauri kann nach dem macOS-MVP getroffen werden, wenn abzusehen ist, dass native Windows/Linux-UI-Shells nicht rechtzeitig realisierbar sind. Tauri erlaubt es, den Rust-Core ohne Änderungen weiterzuverwenden und nur die UI-Schicht zu tauschen. Der Sicherheitsabstrich durch den WebView ist dokumentiert und akzeptierbar, wenn CSP und die Rust-Bridge sauber implementiert sind.
