@@ -9,6 +9,7 @@ final class TechnicalE2EPipeline: ObservableObject {
     @Published private(set) var hotkeyStatusSummary = "not_started"
     @Published private(set) var hotkeySignalMessage = "Noch kein Hotkey erkannt."
     @Published private(set) var hotkeySignalKind = "idle"
+    @Published private(set) var hotkeyDebugStatus = "idle"
     @Published private(set) var latestAudioLevel: Float = 0
     @Published private(set) var latestRouteJSON = "{}"
     @Published private(set) var latestTranscript = ""
@@ -189,6 +190,7 @@ final class TechnicalE2EPipeline: ObservableObject {
     func confirmReview() {
         let confirmedTranscript = latestTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !confirmedTranscript.isEmpty else {
+            updateHotkeyDebug("confirm_failed empty_transcript")
             fail("review_confirm_without_transcript")
             return
         }
@@ -205,6 +207,7 @@ final class TechnicalE2EPipeline: ObservableObject {
 
         latestInjectionSummary =
             "disposition=\(describe(injectionResult.disposition)), method=\(injectionResult.method.rawValue), bundle=\(targetBundleIdentifier ?? "unknown")"
+        updateHotkeyDebug("injection \(latestInjectionSummary) detail=\(injectionResult.detail)")
         appendLog("Injection result: \(latestInjectionSummary). \(injectionResult.detail)")
         let injectionTelemetryStatus: String
         switch injectionResult.disposition {
@@ -259,6 +262,7 @@ final class TechnicalE2EPipeline: ObservableObject {
         clearCapturedInjectionTargetContext()
         setPhase("idle", trigger: "confirm_review_completed")
         refreshDictationState()
+        updateHotkeyDebug("confirm_completed disposition=\(describe(injectionResult.disposition))")
         emitTelemetry(
             category: "review",
             action: "confirmed",
@@ -348,6 +352,7 @@ final class TechnicalE2EPipeline: ObservableObject {
         let triggerLabel = hotkeyLabel ?? source
         if isStartingCapture {
             markHotkeySignal(kind: "ignored", message: "\(triggerLabel): ignoriert (Start laeuft)")
+            updateHotkeyDebug("trigger_ignored reason=capture_start_in_progress source=\(source) label=\(triggerLabel)")
             emitTelemetry(
                 category: "hotkey",
                 action: "trigger_ignored",
@@ -360,6 +365,7 @@ final class TechnicalE2EPipeline: ObservableObject {
 
         if isTranscribing {
             markHotkeySignal(kind: "ignored", message: "\(triggerLabel): ignoriert (Transkription laeuft)")
+            updateHotkeyDebug("trigger_ignored reason=transcribing_in_progress source=\(source) label=\(triggerLabel)")
             emitTelemetry(
                 category: "hotkey",
                 action: "trigger_ignored",
@@ -372,9 +378,11 @@ final class TechnicalE2EPipeline: ObservableObject {
 
         if phase == "listening" {
             markHotkeySignal(kind: "stop", message: "\(triggerLabel): STOP")
+            updateHotkeyDebug("trigger_stop source=\(source) label=\(triggerLabel)")
             stopListeningAndTranscribe(triggerSource: source)
         } else {
             markHotkeySignal(kind: "start", message: "\(triggerLabel): START")
+            updateHotkeyDebug("trigger_start source=\(source) label=\(triggerLabel)")
             startListening(triggerSource: source)
         }
     }
@@ -408,6 +416,7 @@ final class TechnicalE2EPipeline: ObservableObject {
             status: "ok",
             context: ["trigger_source": triggerSource]
         )
+        updateHotkeyDebug("start_requested trigger=\(triggerSource)")
         isStartingCapture = true
 
         audioAdapter.requestPermission { [weak self] granted in
@@ -418,6 +427,7 @@ final class TechnicalE2EPipeline: ObservableObject {
 
                 if !granted {
                     self.isStartingCapture = false
+                    self.updateHotkeyDebug("microphone_permission_denied")
                     self.reportCorePermissionEvent(
                         source: "macos.audio",
                         permission: "microphone",
@@ -446,6 +456,7 @@ final class TechnicalE2EPipeline: ObservableObject {
                     status: "granted",
                     context: [:]
                 )
+                self.updateHotkeyDebug("microphone_permission_granted")
 
                 do {
                     try self.audioAdapter.startCapture { [weak self] level in
@@ -455,6 +466,7 @@ final class TechnicalE2EPipeline: ObservableObject {
                     }
                 } catch {
                     self.isStartingCapture = false
+                    self.updateHotkeyDebug("audio_capture_start_failed \(error.localizedDescription)")
                     self.fail("audio_capture_start_failed")
                     return
                 }
@@ -462,6 +474,7 @@ final class TechnicalE2EPipeline: ObservableObject {
                 self.isStartingCapture = false
                 self.setPhase("listening", trigger: "audio_capture_started")
                 self.refreshDictationState()
+                self.updateHotkeyDebug("listening")
                 self.appendLog("Listening started via \(triggerSource) trigger.")
             }
         }
@@ -477,6 +490,7 @@ final class TechnicalE2EPipeline: ObservableObject {
         latestAudioLevel = 0
         setPhase("transcribing", trigger: "listening_stopped", valueMs: captureResult.durationMs)
         isTranscribing = true
+        updateHotkeyDebug("transcribing duration_ms=\(captureResult.durationMs)")
 
         latestRouteJSON = coreBridge.sttRouteJSON(
             preferenceMode: settingsController.routingMode.ffiPreferenceMode,
@@ -521,6 +535,7 @@ final class TechnicalE2EPipeline: ObservableObject {
         case let .failure(error):
             shouldAutoConfirmAfterTranscription = false
             let sttFailureCode = reportStructuredSTTFailure(error)
+            updateHotkeyDebug("stt_failed code=\(sttFailureCode) message=\(error.localizedDescription)")
             if sttFailureCode == "no_speech_detected" {
                 _ = coreBridge.dictationReset()
                 latestTranscript = ""
@@ -552,6 +567,9 @@ final class TechnicalE2EPipeline: ObservableObject {
 
         case let .success(transcriptResult):
             latestTranscript = transcriptResult.transcript
+            updateHotkeyDebug(
+                "stt_ok provider=\(transcriptResult.provider) confidence=\(transcriptResult.confidencePercent) transcript_len=\(transcriptResult.transcript.count)"
+            )
 
             let partialStatus = coreBridge.dictationAppendPartial(transcriptResult.transcript)
             let reviewStatus = coreBridge.dictationFinalizeReview(transcriptResult.transcript)
@@ -584,6 +602,7 @@ final class TechnicalE2EPipeline: ObservableObject {
 
             if shouldAutoConfirmAfterTranscription {
                 shouldAutoConfirmAfterTranscription = false
+                updateHotkeyDebug("auto_confirm_requested")
                 confirmReview()
             }
         }
@@ -667,6 +686,7 @@ final class TechnicalE2EPipeline: ObservableObject {
         isStartingCapture = false
         shouldAutoConfirmAfterTranscription = false
         hotkeySignalKind = "idle"
+        updateHotkeyDebug("failed reason=\(reason)")
         clearCapturedInjectionTargetContext()
         abortQueuedAndRunningToolInvocations(reason: "pipeline_failed_\(reason)", originDomainEventID: 0)
         _ = coreBridge.dictationFail(reason)
@@ -1393,6 +1413,10 @@ final class TechnicalE2EPipeline: ObservableObject {
     private func markHotkeySignal(kind: String, message: String) {
         hotkeySignalKind = kind
         hotkeySignalMessage = "\(Self.signalTimestampString()) - \(message)"
+    }
+
+    private func updateHotkeyDebug(_ message: String) {
+        hotkeyDebugStatus = "\(Self.timestampFormatter.string(from: Date())) \(message)"
     }
 
     private static func signalTimestampString() -> String {

@@ -39,9 +39,14 @@ struct MacOSTextInjectionAdapter: TextInjecting {
         "com.1password.1password"
     ]
     private let forceClipboardFallback: Bool
+    private let autoPasteAfterClipboardFallback: Bool
 
-    init(forceClipboardFallback: Bool = ProcessInfo.processInfo.environment["SYNTIC_FORCE_CLIPBOARD_FALLBACK"] == "1") {
+    init(
+        forceClipboardFallback: Bool = ProcessInfo.processInfo.environment["SYNTIC_FORCE_CLIPBOARD_FALLBACK"] == "1",
+        autoPasteAfterClipboardFallback: Bool = ProcessInfo.processInfo.environment["SYNTIC_DISABLE_CLIPBOARD_AUTOPASTE"] != "1"
+    ) {
         self.forceClipboardFallback = forceClipboardFallback
+        self.autoPasteAfterClipboardFallback = autoPasteAfterClipboardFallback
     }
 
     func inject(
@@ -230,11 +235,48 @@ struct MacOSTextInjectionAdapter: TextInjecting {
         pasteboard.clearContents()
         pasteboard.setString(text, forType: .string)
 
+        if autoPasteAfterClipboardFallback {
+            let pasteResult = postPasteShortcut()
+            if pasteResult.sent {
+                return TextInjectionResult(
+                    disposition: .injected,
+                    method: .clipboard,
+                    detail: "\(detail) Text auf Clipboard gelegt. Cmd+V gesendet (\(pasteResult.detail))."
+                )
+            }
+
+            return TextInjectionResult(
+                disposition: .clipboardFallback,
+                method: .clipboard,
+                detail: "\(detail) Text auf Clipboard gelegt. Cmd+V fehlgeschlagen (\(pasteResult.detail))."
+            )
+        }
+
         return TextInjectionResult(
             disposition: .clipboardFallback,
             method: .clipboard,
             detail: "\(detail) Text auf Clipboard gelegt."
         )
+    }
+
+    private func postPasteShortcut() -> (sent: Bool, detail: String) {
+        guard let source = CGEventSource(stateID: .hidSystemState) else {
+            return (false, "CGEventSource fehlgeschlagen")
+        }
+
+        let keyCodeForV: CGKeyCode = 9
+        guard
+            let keyDown = CGEvent(keyboardEventSource: source, virtualKey: keyCodeForV, keyDown: true),
+            let keyUp = CGEvent(keyboardEventSource: source, virtualKey: keyCodeForV, keyDown: false)
+        else {
+            return (false, "Cmd+V Events konnten nicht erstellt werden")
+        }
+
+        keyDown.flags = .maskCommand
+        keyUp.flags = .maskCommand
+        keyDown.post(tap: .cghidEventTap)
+        keyUp.post(tap: .cghidEventTap)
+        return (true, "posted")
     }
 
     private func describe(axError: AXError) -> String {

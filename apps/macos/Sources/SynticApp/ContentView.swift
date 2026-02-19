@@ -54,6 +54,11 @@ struct ContentView: View {
                     .fill(Color.white.opacity(0.12))
             )
 
+            Text("Debug Pipeline: \(technicalE2EPipeline.hotkeyDebugStatus)")
+                .font(.caption2.monospaced())
+                .foregroundStyle(.secondary)
+                .lineLimit(3)
+
             Divider()
 
             Text("Core-Version: \(coreBridge.coreVersion())")
