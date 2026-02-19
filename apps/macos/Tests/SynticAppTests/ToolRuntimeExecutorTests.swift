@@ -182,6 +182,70 @@ final class ToolRuntimeExecutorTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.destinationFileURL.path))
     }
 
+    func testMoveRejectsDestinationOutsideAllowedPolicyRoots() throws {
+        let fixture = try makeMoveFixture()
+        defer { fixture.cleanup() }
+
+        let plan = ToolExecutionPlan(
+            invocationID: "test-\(UUID().uuidString)",
+            transcript: "move file to /etc",
+            origin: "unit_test",
+            intentKind: "move_file",
+            intentSummary: "summary",
+            confidencePercent: 80,
+            safetyDecision: "require_confirmation",
+            destructive: true,
+            safetyReason: "explicit_user_confirmation_required",
+            moveDestinationHint: "/etc",
+            moveDestinationKindHint: "absolute_path",
+            renameTargetHint: nil,
+            timerDurationHint: nil
+        )
+
+        let executor = FileBackedToolExecutor(
+            rootDirectoryURL: fixture.runtimeRootURL,
+            finderContextProvider: StaticFinderContextProvider(snapshot: fixture.snapshot),
+            destructiveExecutionMode: .allowExecution
+        )
+        let result = try executor.execute(plan: plan)
+
+        XCTAssertEqual(result.outcome, .rejected)
+        XCTAssertEqual(result.rejectionCode, "move_destination_out_of_policy")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.sourceFileURL.path))
+    }
+
+    func testRenameRejectsReservedTargetNames() throws {
+        let fixture = try makeRenameFixture()
+        defer { fixture.cleanup() }
+
+        let plan = ToolExecutionPlan(
+            invocationID: "test-\(UUID().uuidString)",
+            transcript: "rename file to ..",
+            origin: "unit_test",
+            intentKind: "rename_file",
+            intentSummary: "summary",
+            confidencePercent: 80,
+            safetyDecision: "require_confirmation",
+            destructive: true,
+            safetyReason: "explicit_user_confirmation_required",
+            moveDestinationHint: nil,
+            moveDestinationKindHint: nil,
+            renameTargetHint: "..",
+            timerDurationHint: nil
+        )
+
+        let executor = FileBackedToolExecutor(
+            rootDirectoryURL: fixture.runtimeRootURL,
+            finderContextProvider: StaticFinderContextProvider(snapshot: fixture.snapshot),
+            destructiveExecutionMode: .allowExecution
+        )
+        let result = try executor.execute(plan: plan)
+
+        XCTAssertEqual(result.outcome, .rejected)
+        XCTAssertEqual(result.rejectionCode, "rename_target_reserved")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.originalFileURL.path))
+    }
+
     private func makeMoveFixture(createDestinationConflict: Bool = false) throws -> MoveFixture {
         let rootURL = try makeTemporaryDirectory()
         let runtimeRootURL = rootURL.appendingPathComponent("runtime", isDirectory: true)

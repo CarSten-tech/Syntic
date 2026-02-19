@@ -70,6 +70,8 @@ final class FileBackedToolExecutor: ToolExecuting {
     private let executionLogURL: URL
     private let notesURL: URL
     private let timersURL: URL
+    private let homeDirectoryURL: URL
+    private let temporaryDirectoryURL: URL
 
     init(
         fileManager: FileManager = .default,
@@ -80,6 +82,8 @@ final class FileBackedToolExecutor: ToolExecuting {
         self.fileManager = fileManager
         self.finderContextProvider = finderContextProvider
         self.destructiveExecutionMode = destructiveExecutionMode
+        homeDirectoryURL = fileManager.homeDirectoryForCurrentUser.standardizedFileURL
+        temporaryDirectoryURL = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true).standardizedFileURL
 
         let root: URL
         if let rootDirectoryURL {
@@ -180,6 +184,15 @@ final class FileBackedToolExecutor: ToolExecuting {
             )
         }
 
+        if !isDestinationPathAllowedByPolicy(destinationURL) {
+            return ToolExecutionResult(
+                outcome: .rejected,
+                detail: "Move rejected: destination path outside allowed roots (\(destinationURL.path)).",
+                artifactPath: destinationURL.path,
+                rejectionCode: "move_destination_out_of_policy"
+            )
+        }
+
         var isDirectory: ObjCBool = false
         guard fileManager.fileExists(atPath: destinationURL.path, isDirectory: &isDirectory), isDirectory.boolValue else {
             return ToolExecutionResult(
@@ -275,12 +288,12 @@ final class FileBackedToolExecutor: ToolExecuting {
             )
         }
 
-        if newName.contains("/") || newName.contains(":") {
+        if let invalidReasonCode = renameValidationFailureCode(for: newName) {
             return ToolExecutionResult(
                 outcome: .rejected,
-                detail: "Rename rejected: target name contains invalid path characters.",
+                detail: "Rename rejected: target name is invalid (\(invalidReasonCode)).",
                 artifactPath: nil,
-                rejectionCode: "rename_target_invalid"
+                rejectionCode: invalidReasonCode
             )
         }
 
@@ -399,35 +412,23 @@ final class FileBackedToolExecutor: ToolExecuting {
 
         switch kindHint?.lowercased() {
         case "desktop":
-            return fileManager.urls(for: .desktopDirectory, in: .userDomainMask).first
+            return directoryURL(for: .desktopDirectory)
         case "documents":
-            return fileManager.urls(for: .documentDirectory, in: .userDomainMask).first
+            return directoryURL(for: .documentDirectory)
         case "downloads":
-            return fileManager.urls(for: .downloadsDirectory, in: .userDomainMask).first
+            return directoryURL(for: .downloadsDirectory)
         case "absolute_path":
-            let expanded = (destinationToken as NSString).expandingTildeInPath
-            guard expanded.hasPrefix("/") else {
-                return nil
-            }
-            return URL(fileURLWithPath: expanded, isDirectory: true)
+            return parseAbsoluteDirectoryPath(from: destinationToken)
+        case "alias":
+            return resolveKnownDirectoryAlias(destinationToken)
         default:
             break
         }
 
-        switch destinationToken.lowercased() {
-        case "desktop":
-            return fileManager.urls(for: .desktopDirectory, in: .userDomainMask).first
-        case "documents", "dokumente":
-            return fileManager.urls(for: .documentDirectory, in: .userDomainMask).first
-        case "downloads":
-            return fileManager.urls(for: .downloadsDirectory, in: .userDomainMask).first
-        default:
-            let expanded = (destinationToken as NSString).expandingTildeInPath
-            guard expanded.hasPrefix("/") else {
-                return nil
-            }
-            return URL(fileURLWithPath: expanded, isDirectory: true)
+        if let aliasURL = resolveKnownDirectoryAlias(destinationToken) {
+            return aliasURL
         }
+        return parseAbsoluteDirectoryPath(from: destinationToken)
     }
 
     private func parsedRenameTargetFromTranscript(_ transcript: String) -> String? {
@@ -458,7 +459,85 @@ final class FileBackedToolExecutor: ToolExecuting {
             let quoted = trimmed[trimmed.index(after: trimmed.startIndex) ..< closingIndex]
             return String(quoted).trimmingCharacters(in: .whitespacesAndNewlines)
         }
-        return trimmed.trimmingCharacters(in: CharacterSet(charactersIn: ".,;:"))
+        let sanitized = trimmed.trimmingCharacters(in: CharacterSet(charactersIn: ".,;:"))
+        if sanitized.isEmpty, trimmed == "." || trimmed == ".." {
+            return trimmed
+        }
+        return (sanitized as NSString).precomposedStringWithCanonicalMapping
+    }
+
+    private func directoryURL(for searchPath: FileManager.SearchPathDirectory) -> URL? {
+        fileManager.urls(for: searchPath, in: .userDomainMask).first?.standardizedFileURL
+    }
+
+    private func resolveKnownDirectoryAlias(_ token: String) -> URL? {
+        let normalized = normalizeAliasToken(token)
+        switch normalized {
+        case "desktop", "schreibtisch":
+            return directoryURL(for: .desktopDirectory)
+        case "documents", "dokumente", "docs":
+            return directoryURL(for: .documentDirectory)
+        case "downloads", "download":
+            return directoryURL(for: .downloadsDirectory)
+        default:
+            return nil
+        }
+    }
+
+    private func normalizeAliasToken(_ token: String) -> String {
+        token
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: "-", with: "")
+            .replacingOccurrences(of: "_", with: "")
+            .replacingOccurrences(of: " ", with: "")
+    }
+
+    private func parseAbsoluteDirectoryPath(from token: String) -> URL? {
+        let expanded = (token as NSString).expandingTildeInPath
+        guard expanded.hasPrefix("/") else {
+            return nil
+        }
+        return URL(fileURLWithPath: expanded, isDirectory: true).standardizedFileURL
+    }
+
+    private func isDestinationPathAllowedByPolicy(_ destinationURL: URL) -> Bool {
+        let standardizedDestination = destinationURL.standardizedFileURL.path
+        let allowedRoots = [
+            homeDirectoryURL.path,
+            "/tmp",
+            "/private/tmp",
+            temporaryDirectoryURL.path
+        ]
+
+        for root in allowedRoots {
+            let normalizedRoot: String
+            if root.count > 1, root.hasSuffix("/") {
+                normalizedRoot = String(root.dropLast())
+            } else {
+                normalizedRoot = root
+            }
+            if standardizedDestination == normalizedRoot || standardizedDestination.hasPrefix(normalizedRoot + "/") {
+                return true
+            }
+        }
+        return false
+    }
+
+    private func renameValidationFailureCode(for newName: String) -> String? {
+        if newName == "." || newName == ".." {
+            return "rename_target_reserved"
+        }
+        if newName.utf8.count > 255 {
+            return "rename_target_too_long"
+        }
+        if newName.contains("/") || newName.contains(":") {
+            return "rename_target_invalid"
+        }
+        if newName.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) {
+            return "rename_target_invalid"
+        }
+        return nil
     }
 
     private func ensureDirectories() throws {
