@@ -4,45 +4,61 @@ import SwiftUI
 
 @MainActor
 final class HotkeyOverlayCoordinator {
-    private var signalCancellable: AnyCancellable?
+    private var signalKindCancellable: AnyCancellable?
     private let overlayWindowController = HotkeyOverlayWindowController()
 
     init(pipeline: TechnicalE2EPipeline) {
-        signalCancellable = pipeline.$hotkeySignalMessage
-            .combineLatest(pipeline.$hotkeySignalKind)
+        signalKindCancellable = pipeline.$hotkeySignalKind
             .dropFirst()
-            .sink { [weak self] message, kind in
-                self?.handleHotkeySignal(message: message, kind: kind)
+            .sink { [weak self] kind in
+                self?.handleHotkeySignal(kind: kind)
             }
     }
 
-    private func handleHotkeySignal(message: String, kind: String) {
-        if kind == "idle" {
+    private func handleHotkeySignal(kind: String) {
+        switch kind {
+        case "start":
+            overlayWindowController.show()
+        case "stop", "ignored", "idle":
             overlayWindowController.hide()
-            return
+        default:
+            break
         }
-        overlayWindowController.show(message: message, kind: kind)
     }
 }
 
 @MainActor
 private final class HotkeyOverlayWindowController {
     private var panel: NSPanel?
-    private var hostingView: NSHostingView<HotkeyOverlayBannerView>?
-    private var autoHideTask: Task<Void, Never>?
 
-    func show(message: String, kind: String) {
+    func show() {
         ensurePanel()
-        hostingView?.rootView = HotkeyOverlayBannerView(message: message, kind: kind)
         repositionPanel()
-        panel?.alphaValue = 1
-        panel?.orderFrontRegardless()
-        scheduleAutoHide()
+        guard let panel else {
+            return
+        }
+        if panel.isVisible {
+            return
+        }
+        panel.alphaValue = 0
+        panel.orderFrontRegardless()
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.14
+            panel.animator().alphaValue = 1
+        }
     }
 
     func hide() {
-        autoHideTask?.cancel()
-        panel?.orderOut(nil)
+        guard let panel, panel.isVisible else {
+            return
+        }
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.11
+            panel.animator().alphaValue = 0
+        } completionHandler: {
+            panel.orderOut(nil)
+            panel.alphaValue = 1
+        }
     }
 
     private func ensurePanel() {
@@ -50,7 +66,7 @@ private final class HotkeyOverlayWindowController {
             return
         }
 
-        let initialFrame = NSRect(x: 200, y: 200, width: 540, height: 54)
+        let initialFrame = NSRect(x: 200, y: 200, width: 186, height: 42)
         let panel = NSPanel(
             contentRect: initialFrame,
             styleMask: [.borderless, .nonactivatingPanel],
@@ -65,12 +81,11 @@ private final class HotkeyOverlayWindowController {
         panel.ignoresMouseEvents = true
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
 
-        let host = NSHostingView(rootView: HotkeyOverlayBannerView(message: "-", kind: "idle"))
+        let host = NSHostingView(rootView: HotkeyOverlayPillView())
         host.frame = NSRect(origin: .zero, size: initialFrame.size)
         host.autoresizingMask = [.width, .height]
         panel.contentView = host
 
-        self.hostingView = host
         self.panel = panel
     }
 
@@ -81,8 +96,8 @@ private final class HotkeyOverlayWindowController {
 
         let menuBarHeight = max(0, screen.frame.maxY - screen.visibleFrame.maxY)
         let topPadding: CGFloat = 38 // approx. 1cm under menu bar
-        let width = min(540, screen.visibleFrame.width - 40)
-        let height: CGFloat = 54
+        let width = min(186, screen.visibleFrame.width - 40)
+        let height: CGFloat = 42
         let originX = screen.frame.midX - (width / 2)
         let originY = screen.frame.maxY - menuBarHeight - topPadding - height
 
@@ -96,56 +111,63 @@ private final class HotkeyOverlayWindowController {
         }
         return NSScreen.main ?? NSScreen.screens.first
     }
+}
 
-    private func scheduleAutoHide() {
-        autoHideTask?.cancel()
-        autoHideTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: 2_500_000_000)
-            guard let self, !Task.isCancelled else {
-                return
+private struct HotkeyOverlayPillView: View {
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 21, style: .continuous)
+                .fill(Color.black.opacity(0.92))
+            RoundedRectangle(cornerRadius: 21, style: .continuous)
+                .stroke(Color.white.opacity(0.14), lineWidth: 1)
+
+            ZStack {
+                AnimatedWaveformView()
+                    .frame(width: 80, height: 16)
+
+                HStack {
+                    Spacer()
+                    Image(systemName: "line.3.horizontal")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(Color.white.opacity(0.72))
+                }
+                .padding(.trailing, 12)
             }
-            self.panel?.orderOut(nil)
+            .padding(.horizontal, 12)
         }
     }
 }
 
-private struct HotkeyOverlayBannerView: View {
-    let message: String
-    let kind: String
+private struct AnimatedWaveformView: View {
+    private let barCount = 13
 
     var body: some View {
-        HStack(spacing: 10) {
-            Circle()
-                .fill(accentColor)
-                .frame(width: 10, height: 10)
-            Text(message)
-                .font(.system(size: 14, weight: .semibold, design: .rounded))
-                .lineLimit(1)
-                .foregroundStyle(.white)
+        TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timeline in
+            let t = timeline.date.timeIntervalSinceReferenceDate
+            HStack(alignment: .center, spacing: 2) {
+                ForEach(0..<barCount, id: \.self) { index in
+                    Capsule(style: .continuous)
+                        .fill(Color.white.opacity(opacity(for: index)))
+                        .frame(width: 3, height: height(for: index, time: t))
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(Color.black.opacity(0.72))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(Color.white.opacity(0.22), lineWidth: 1)
-        )
     }
 
-    private var accentColor: Color {
-        switch kind {
-        case "start":
-            return .green
-        case "stop":
-            return .orange
-        case "ignored":
-            return .red
-        default:
-            return .gray
-        }
+    private func height(for index: Int, time: TimeInterval) -> CGFloat {
+        let center = Double(barCount - 1) / 2
+        let distanceFromCenter = abs(Double(index) - center)
+        let centerWeight = max(0.2, 1 - (distanceFromCenter / center))
+        let wave = (sin((time * 6.4) + (Double(index) * 0.82)) + 1) / 2
+        let amplitude = (0.35 + (0.65 * wave)) * centerWeight
+        return CGFloat(4 + (12 * amplitude))
+    }
+
+    private func opacity(for index: Int) -> Double {
+        let center = Double(barCount - 1) / 2
+        let distanceFromCenter = abs(Double(index) - center)
+        let centerWeight = max(0.35, 1 - (distanceFromCenter / center))
+        return 0.38 + (0.62 * centerWeight)
     }
 }

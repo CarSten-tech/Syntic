@@ -59,7 +59,6 @@ final class TechnicalE2EPipeline: ObservableObject {
     private var domainEventWindow: [DomainEventEnvelope] = []
     private var toolSignalWindow: [ToolRuntimeSignalEnvelope] = []
     private var sessionHistoryWindow: [CoreSessionHistoryRecordEnvelope] = []
-    private var hotkeySignalResetTask: Task<Void, Never>?
 
     init(
         coreBridge: SynticCoreVersionProviding,
@@ -112,7 +111,6 @@ final class TechnicalE2EPipeline: ObservableObject {
     }
 
     deinit {
-        hotkeySignalResetTask?.cancel()
         for task in runningToolInvocationTasks.values {
             task.cancel()
         }
@@ -658,6 +656,7 @@ final class TechnicalE2EPipeline: ObservableObject {
 
     private func fail(_ reason: String, reportCoreError: Bool = true) {
         isStartingCapture = false
+        hotkeySignalKind = "idle"
         clearCapturedInjectionTargetContext()
         abortQueuedAndRunningToolInvocations(reason: "pipeline_failed_\(reason)", originDomainEventID: 0)
         _ = coreBridge.dictationFail(reason)
@@ -1382,16 +1381,8 @@ final class TechnicalE2EPipeline: ObservableObject {
     }
 
     private func markHotkeySignal(kind: String, message: String) {
-        hotkeySignalResetTask?.cancel()
         hotkeySignalKind = kind
         hotkeySignalMessage = "\(Self.signalTimestampString()) - \(message)"
-        hotkeySignalResetTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: 2_000_000_000)
-            guard let self, !Task.isCancelled else {
-                return
-            }
-            self.hotkeySignalKind = "idle"
-        }
     }
 
     private static func signalTimestampString() -> String {
