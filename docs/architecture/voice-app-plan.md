@@ -278,3 +278,192 @@ Akzeptierter Nachteil: Pro Plattform eine eigene UI-Shell. Für Phase 1 (macOS) 
 **Plan B: Kandidat B — Tauri v2.**
 
 Wenn das Team überwiegend web-affin ist und die Time-to-Market kritisch wird, ist Tauri v2 der sinnvolle Rückfall. Die Entscheidung zu Tauri kann nach dem macOS-MVP getroffen werden, wenn abzusehen ist, dass native Windows/Linux-UI-Shells nicht rechtzeitig realisierbar sind. Tauri erlaubt es, den Rust-Core ohne Änderungen weiterzuverwenden und nur die UI-Schicht zu tauschen. Der Sicherheitsabstrich durch den WebView ist dokumentiert und akzeptierbar, wenn CSP und die Rust-Bridge sauber implementiert sind.
+
+---
+
+## 4. Zielarchitektur
+
+Die Architektur ist in zwei strikt getrennte Schichten organisiert: den **plattformunabhängigen Core** (Rust) und die **Platform Adapters + UI Shell** (je Plattform nativ). Alle Abhängigkeiten zeigen von außen nach innen — kein Core-Modul kennt plattformspezifischen Code.
+
+```
+┌──────────────────────────────────────────────┐
+│              Platform Layer (nativ)          │
+│  UI Shell · Hotkey Adapter · OS Adapters     │
+├──────────────────────────────────────────────┤
+│              Core (Rust)                     │
+│  Orchestration · STT · LLM · Tools · Data   │
+└──────────────────────────────────────────────┘
+```
+
+---
+
+### Modul 1 — Core vs. Platform Adapters
+
+**Core (Rust-Bibliothek, plattformunabhängig):**
+- Enthält ausnahmslos alle Business-Regeln, Datenmodelle, Orchestrierungslogik und Zustandsmaschinen
+- Exponiert eine klar typisierte FFI-Schnittstelle (C-ABI) nach außen — keine nativen Typen durchdringen die Grenze
+- Hat keine Kenntnis von UI, OS-APIs, Dateisystempfaden außerhalb der abstrakten Tool-Schnittstelle oder Netzwerk-Implementierungsdetails
+- Jede externe Abhängigkeit (STT-Provider, LLM-Provider, Keychain, Dateisystem) ist als abstraktes Interface definiert — der Core ruft Interfaces auf, nie konkrete Implementierungen
+
+**Platform Adapters (nativ, je Plattform):**
+- Implementieren die vom Core definierten Interfaces für den jeweiligen OS-Kontext
+- macOS-Adapters: `KeychainAdapter` (Security.framework), `GlobalHotkeyAdapter` (CGEventTap), `TextInjectionAdapter` (AX API), `FinderSelectionAdapter` (NSAppleScript), `NotificationAdapter` (UserNotifications), `AudioCaptureAdapter` (AVFoundation / CoreAudio)
+- Adapters haben keine eigene Business-Logik — sie übersetzen nur zwischen OS-APIs und Core-Interfaces
+- Jeder Adapter ist einzeln testbar (gegen Mock-Core-Interface)
+
+**Grenzregel:** Kein Adapter-Code im Core. Kein Core-Code in Adaptern, der nicht über das Interface-Protokoll läuft. Verletzungen dieser Regel sind Architektur-Bugs.
+
+---
+
+### Modul 2 — UI Shell (macOS: SwiftUI + AppKit)
+
+**Verantwortlichkeit:** Darstellung aller visuellen Zustände, Entgegennahme von Nutzereingaben, Weiterleitung an Core-Events. Keine Business-Logik.
+
+- Besteht aus drei unabhängigen Fensterkontexten: Menu Bar Popover (Status + Schnellaktionen), Command Palette (NSPanel, systemweit schwebend), Settings-Fenster (reguläres NSWindow)
+- Alle UI-Zustände sind vom Core-Zustand abgeleitet — die UI ist eine pure Projektion des Core-State, kein eigenständiger Zustand
+- Reagiert auf State-Events vom Core via definiertem Event-Bus (Callbacks / Swift-Concurrency)
+- Hält keinen persistenten Zustand selbst — kein `@State` für Business-Daten, nur UI-lokale Zustände (z. B. Fokus, Scroll-Position)
+- Dark Mode, Accessibility, i18n-Strings werden auf dieser Schicht verwaltet
+
+---
+
+### Modul 3 — Global Hotkey / Launcher
+
+**Verantwortlichkeit:** Systemweites Abhören von Tastenkombinationen und Auslösen der korrekten App-Reaktion.
+
+- macOS: CGEventTap mit `kCGEventTapOptionDefault` — erfordert Input Monitoring Permission. Registriert zwei separate Hotkeys: Diktat-Hotkey und Command-Hotkey
+- Hotkey-Konfiguration stammt aus dem Settings-Modul, wird zur Laufzeit aktualisiert ohne App-Neustart
+- Bei Hotkey-Auslösung: speichert atomisch den aktuell fokussierten Prozess und das fokussierte AX-Element (für spätere Text-Injection) — dies geschieht vor jeder anderen Aktion, um Race Conditions zu vermeiden
+- Konflikt-Erkennung: prüft beim Speichern neuer Hotkeys ob Systemkonflikte bestehen (z. B. ⌘Space ist Spotlight); warnt den Nutzer, blockiert nicht
+- Fallback bei Input Monitoring Permission fehlt: Polling-basierter Hotkey via CGEventSource (eingeschränkt, nur wenn App im Vordergrund) — Feature-Downgrade klar kommuniziert
+
+---
+
+### Modul 4 — Overlay / Palette Layer
+
+**Verantwortlichkeit:** Darstellung des schwebenden Dictation Indicators und der Command Palette, unabhängig von der aktiven App.
+
+- macOS: NSPanel mit `NSWindowStyleMaskNonactivatingPanel` — Panel übernimmt keinen Fokus, aktive App behält ihren Zustand
+- Command Palette: zentriert, oben, Spotlight-Proportionen; Erscheinen unter 100 ms (vorgeladen im Speicher, nicht neu erstellt)
+- Dictation Indicator: kleines schwebenes Widget nahe Cursor oder am Bildschirmrand, zeigt Live-Wellenform und Transkriptions-Preview
+- Beide Overlays sind Level `NSPopUpMenuWindowLevel` — sie schweben über allen normalen Fenstern
+- Escape schließt immer, kein Nebeneffekt
+- Tastatur-Navigation vollständig: Tab, Arrow Keys, Enter, Escape — keine Maus-Notwendigkeit
+
+---
+
+### Modul 5 — Audio Capture & VAD
+
+**Verantwortlichkeit:** Mikrofon-Zugriff, Audio-Pufferung und Voice Activity Detection — ohne STT-Logik.
+
+- macOS: AVAudioEngine für Low-Latency-Capture, CoreAudio für direkten Buffer-Zugriff falls nötig
+- Audio-Buffer liegt ausschließlich im RAM — kein Schreiben auf Disk, kein Persistieren zwischen Sessions
+- VAD (Voice Activity Detection): Energie-basiert als primäre Methode (schnell, lokal, kein Modell nötig); optionale Erweiterung mit Silero VAD (kleines ONNX-Modell, on-device) für bessere Genauigkeit in Hintergrundgeräusch-Szenarien
+- Konfigurierbare Parameter: Silence-Threshold (ms bis Auto-Stop), Noise-Gate-Level
+- Audio-Format: 16 kHz, 16-bit PCM Mono — Standardformat für alle STT-Backends, kein Re-Encoding nötig
+- Mikrofon-Status ist ein expliziter Zustand (idle / listening / error) — jede Zustandsänderung wird als Event an UI und Core propagiert
+- Bei Audio-Capture-Fehler (z. B. Mikrofon durch andere App blockiert): sofortiger Fehler-Event, kein stiller Retry
+
+---
+
+### Modul 6 — STT Layer (Hybrid)
+
+**Verantwortlichkeit:** Umwandlung von Audio-Buffern in transkribierten Text. Abstraktion über Provider hinweg.
+
+**Interface-Definition (durch Core):** Nimmt Audio-Buffer entgegen, gibt strukturiertes Ergebnis zurück (Text, Konfidenz, Sprache). Kein Provider-spezifischer Code im Core.
+
+**Provider-Implementierungen (als Platform Adapters):**
+
+- **Cloud-Primary (MVP-Default):** OpenAI Whisper API (Realtime oder File-Upload). Vorteile: höchste Qualität, multilinguale Unterstützung, kein lokaler Ressourcenverbrauch. Nachteil: Netzwerkabhängigkeit, Datenschutzrisiko für sensible Inhalte, Kosten.
+- **On-device Option A:** Apple SFSpeechRecognizer (macOS 10.15+). Vorteile: privacy-freundlich, keine Kosten, funktioniert offline. Nachteil: Qualität schlechter als Whisper, besonders bei Fachvokabular; kein Zugriff auf Rohmodell.
+- **On-device Option B (Phase 2):** whisper.cpp lokal via Metal/CoreML. Vorteile: Whisper-Qualität ohne Cloud, vollständig offline. Nachteil: Modell-Download (~150 MB–1,5 GB je Größe), Initialisierungslatenz, Speicherbedarf.
+
+**Routing-Logik (im Core):**
+- Sensitive Mode aktiv → on-device erzwungen (SFSpeechRecognizer im MVP, whisper.cpp ab Phase 2)
+- Cloud-Modus aktiv → OpenAI Whisper Primary, SFSpeechRecognizer als Fallback bei Netzwerkfehler
+- Nutzer-konfigurierbar: immer lokal / immer cloud / auto
+
+**Qualitäts-/Kostenstrategie:**
+- Kurze Befehle (< 5 Sekunden): SFSpeechRecognizer als schneller Local-First-Versuch, bei niedrigem Konfidenz-Score Upgrade auf Cloud
+- Lange Diktate: direkt Cloud (Qualität wichtiger)
+- Latenz-Ziel: unter 300 ms wahrgenommene Latenz für Diktat-Start bis erste Wörter sichtbar (Streaming wo möglich)
+
+---
+
+### Modul 7 — LLM Orchestration
+
+**Verantwortlichkeit:** Intent-Erkennung aus Transkript, Tool-Auswahl, Parameter-Extraktion, Safety Gate, Bestätigungslogik.
+
+**Teilkomponenten:**
+
+- **Intent Classifier:** Nimmt transkribierten Text entgegen. Klassifiziert in Intent-Typ (DICTATE, SET_TIMER, SET_REMINDER, FILE_OP, CREATE_NOTE, UNKNOWN) mit Parametern. Primär via LLM mit strukturiertem Output (JSON-Schema-erzwungen). Fallback: regelbasierter Classifier für die häufigsten Intents (Timer, Notiz) ohne LLM-Abhängigkeit.
+- **Provider Abstraction:** Einheitliches Interface für OpenAI, Anthropic, lokale GGUF-Modelle (via llama.cpp in Phase 2), Enterprise-Endpoints. Konfigurierbar je Nutzer. Failover-Kette definierbar (z. B. Primary: OpenAI, Fallback: lokales Modell).
+- **Safety Gate:** Jeder erkannte Intent mit potenziell destruktiver Wirkung (Datei löschen, umbenennen, verschieben, ausführen) durchläuft einen Safety-Check vor Übergabe an Tool Runtime. Safety Gate gibt Freigabe, Ablehnung oder Confirmation-Request zurück. Keine Tool-Ausführung ohne Safety-Gate-Freigabe.
+- **Confirmation Layer:** Für alle Tool-Aktionen außer trivialen Read-only-Operationen: strukturierte Bestätigung an UI zurückgeben. UI zeigt dem Nutzer lesbare Zusammenfassung. Erst nach expliziter Bestätigung (Enter / Ja) wird Tool Runtime aufgerufen. Timeout: 30 Sekunden ohne Bestätigung → automatischer Abbruch.
+- **Context Window Management:** Conversation-History wird auf das Nötigste beschränkt. Kein persistentes Senden von Transcript-Historie über Sessions hinaus. Prompts werden vor dem Senden auf PII geprüft (Redaction-Filter).
+
+---
+
+### Modul 8 — Tool Runtime
+
+**Verantwortlichkeit:** Ausführung lokaler OS-Operationen auf Basis freigegebener Intents. Kein LLM-Zugriff innerhalb dieses Moduls.
+
+**Verfügbare Tools (MVP):**
+- `TimerTool`: Registriert lokalen Timer, triggert Notification via Notification Adapter
+- `ReminderTool`: Wie Timer, mit optionalem Kalender-Export (benötigt explizite Calendar-Permission)
+- `NoteTool`: Erstellt lokale Markdown-Notiz in konfiguriertem Ordner
+- `FileMoveOp`: Verschiebt Dateien, prüft Ziel-Existenz, fragt Nutzer bei fehlendem Ordner
+- `FileRenameOp`: Umbenennen mit Undo-Eintrag
+- `FileCopyOp`: Kopieren, Konflikterkennung
+- `CreateDirectoryOp`: Ordner anlegen, rekursiv
+
+**Tools Phase 2:**
+- `PdfMergeTool`: Lokal via PDFKit (macOS) oder pdfium
+- `MediaConvertTool`: Via ffmpeg (lokal, kein Cloud-Aufruf)
+
+**Tool-Sicherheitsregeln:**
+- Jedes Tool hat eine deklarierte Allowlist an erlaubten Pfadbereichen (Standard: User Home)
+- Canonical Path Resolution vor jeder Operation — verhindert Symlink- und Path-Traversal-Angriffe
+- Destructive Operations (überschreiben, löschen) erfordern immer Confirmation Layer Freigabe — auch wenn Safety Gate bereits bestanden
+- Undo-Log: jede reversible Operation schreibt einen Undo-Eintrag in die Session-History (nicht persistent)
+- Kein Shell-Passthrough — alle Operationen über typisierte APIs, kein `sh -c`, kein `exec` mit nutzerkontrolliertem String
+
+---
+
+### Modul 9 — Plugin Framework (Phase 2)
+
+**Verantwortlichkeit:** Erweiterbarkeit durch Drittanbieter-Actions ohne Core-Änderungen.
+
+**Grundprinzip:**
+- Plugins sind isolierte Prozesse oder WASM-Module — kein direkter Zugriff auf Core-Memory
+- Plugin-Manifest deklariert: Name, Version, benötigte Permissions, exponierte Intent-Typen
+- Nutzer muss jede Plugin-Permission explizit genehmigen (analog zu macOS Permission-Dialogen)
+- Plugin-Kommunikation über definiertes IPC-Protokoll (ähnlich Language Server Protocol) — keine direkte FFI
+- Signing-Anforderung: Plugins müssen signiert sein; unsignierte Plugins werden nicht geladen
+
+**Abgrenzung zur Tool Runtime:** Built-in Tools (Modul 8) laufen im Core-Prozess. Plugins laufen immer außerhalb. Keine Ausnahme.
+
+---
+
+### Modul 10 — Data & Settings
+
+**Verantwortlichkeit:** Persistente Datenhaltung für Konfiguration, Session-History und Undo-Log.
+
+- **Speicher-Engine:** SQLite via rusqlite — minimal, embedded, kein separater Server-Prozess
+- **Verschlüsselung:** SQLCipher für Datenbank-at-rest-Verschlüsselung. Datenbankschlüssel liegt ausschließlich im OS-Keychain (macOS: Security.framework, nie in der App-Config)
+- **Schemas:** `settings` (Key-Value, typisiert), `session_history` (Transcripts + Intents, mit konfigurierbarer Retention), `undo_log` (session-scoped, gelöscht bei App-Start), `timers` (aktive Timer, überlebt App-Neustart)
+- **API Keys:** Werden niemals in SQLite gespeichert — ausschließlich Keychain. In der Datenbank steht nur ein Verweis (z. B. `provider: openai`, kein Key-Material).
+- **Retention Policy:** Transcript-History standardmäßig 7 Tage, konfigurierbar (0 = kein Speichern). Im Sensitive Mode: Retention 0, kein Schreiben.
+- **Migration:** Schema-Änderungen nur via versionierte Migrations-Skripte — kein Ad-hoc ALTER. Migrations laufen beim App-Start vor jeder Nutzung.
+
+---
+
+### Modul 11 — Observability
+
+**Verantwortlichkeit:** Strukturiertes Logging, opt-in Crash Reporting, Performance-Metriken — ohne PII-Leakage.
+
+- **Logging:** Strukturiertes JSON-Format. Felder: `timestamp`, `level`, `module`, `event`, `session_id` (UUID, session-scoped, kein User-Identifier), plus kontextspezifische Felder. Kein PII, keine API-Keys, keine Dateipfade mit Nutzernamen in Produktions-Logs.
+- **Log-Rotation:** Lokal, max. 10 MB, rolling. Im Sensitive Mode: kein persistentes Logging, nur in-memory für aktive Session.
+- **Redaction Layer:** Alle ausgehenden Log-Einträge durchlaufen einen Redaction-Filter, der bekannte PII-Muster (E-Mail, Name-Patterns, Pfade mit Home-Directory) durch Platzhalter ersetzt.
+- **Crash Reporting:** Opt-in bei Onboarding. Sentry oder äquivalent. Crash-Reports werden vor dem Senden lokal redaktiert (Stack Trace bleibt, User-Daten nicht). Im Sensitive Mode: kein Crash Reporting, immer.
+- **Performance-Metriken:** Lokale Messung von STT-Latenz, Intent-Erkennungslatenz, Tool-Ausführungsdauer — intern für Qualitätssicherung, nicht an externe Services gesendet außer bei explizitem Debug-Report durch Nutzer.
