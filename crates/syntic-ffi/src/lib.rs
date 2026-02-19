@@ -10,6 +10,9 @@ use syntic_core::command::{evaluate_safety, fallback_classify};
 use syntic_core::dictation::{DictationPhase, DictationTransitionError};
 use syntic_core::domain::{DomainEvent, DomainEventPayload, ToolRuntimeSignal};
 use syntic_core::events::{CoreEvent, CoreEventPayload};
+use syntic_core::session_history::{
+    SessionHistoryRecord, SessionHistoryRecordInput, SessionInjectionDisposition, SessionOutcome,
+};
 use syntic_core::stt::{SttPreferenceMode, SttRoutingInput, select_provider};
 
 static CORE_RUNTIME: OnceLock<Mutex<CoreRuntime>> = OnceLock::new();
@@ -24,6 +27,7 @@ enum FfiStatusCode {
     DictationNotActive = 13,
     NullPointer = 20,
     InvalidUtf8 = 21,
+    InvalidArgument = 22,
     Internal = 255,
 }
 
@@ -91,6 +95,14 @@ fn parse_utf8_optional_input(pointer: *const c_char) -> Result<String, FfiStatus
         return Ok(String::new());
     }
     parse_utf8_input(pointer)
+}
+
+fn none_if_empty(value: String) -> Option<String> {
+    if value.trim().is_empty() {
+        None
+    } else {
+        Some(value)
+    }
 }
 
 fn json_escape(value: &str) -> String {
@@ -193,6 +205,14 @@ fn normalized_event_limit(raw_limit: u16) -> usize {
         return 50;
     }
     (raw_limit as usize).min(256)
+}
+
+fn parse_session_outcome(value: &str) -> Option<SessionOutcome> {
+    SessionOutcome::parse(value.trim().to_lowercase().as_str())
+}
+
+fn parse_injection_disposition(value: &str) -> Option<SessionInjectionDisposition> {
+    SessionInjectionDisposition::parse(value.trim().to_lowercase().as_str())
 }
 
 fn core_event_json(event: &CoreEvent) -> String {
@@ -308,6 +328,46 @@ fn tool_runtime_signals_payload_json(signals: &[ToolRuntimeSignal]) -> String {
         .collect::<Vec<_>>()
         .join(",");
     format!("{{\"signals\":[{serialized_signals}]}}")
+}
+
+fn session_history_record_json(record: &SessionHistoryRecord) -> String {
+    let duration_ms_json = record
+        .duration_ms
+        .map_or_else(|| "null".to_owned(), |value| value.to_string());
+    let error_code_json = record.error_code.as_deref().map_or_else(
+        || "null".to_owned(),
+        |value| format!("\"{}\"", json_escape(value)),
+    );
+    let injection_disposition_json = record.injection_disposition.map_or_else(
+        || "null".to_owned(),
+        |value| format!("\"{}\"", value.as_str()),
+    );
+    let undone_at_ms_json = record
+        .undone_at_ms
+        .map_or_else(|| "null".to_owned(), |value| value.to_string());
+
+    format!(
+        "{{\"id\":{},\"created_at_ms\":{},\"duration_ms\":{},\"locale\":\"{}\",\"route_provider\":\"{}\",\"outcome\":\"{}\",\"transcript\":\"{}\",\"error_code\":{},\"injection_disposition\":{},\"undone_at_ms\":{}}}",
+        record.id,
+        record.created_at_ms,
+        duration_ms_json,
+        json_escape(&record.locale),
+        json_escape(&record.route_provider),
+        record.outcome.as_str(),
+        json_escape(&record.transcript),
+        error_code_json,
+        injection_disposition_json,
+        undone_at_ms_json
+    )
+}
+
+fn session_history_payload_json(records: &[SessionHistoryRecord]) -> String {
+    let serialized_records = records
+        .iter()
+        .map(session_history_record_json)
+        .collect::<Vec<_>>()
+        .join(",");
+    format!("{{\"records\":[{serialized_records}]}}")
 }
 
 /// Returns a pointer to a static NUL-terminated UTF-8 version string.
@@ -617,6 +677,122 @@ pub extern "C" fn syntic_domain_events_clear() -> u8 {
     FfiStatusCode::Success as u8
 }
 
+/// Persists one session-history entry into the core runtime journal.
+///
+/// Optional fields (`error_code`, `injection_disposition`) may be null.
+/// `duration_ms=0` is treated as missing duration.
+#[unsafe(no_mangle)]
+pub extern "C" fn syntic_session_history_record(
+    outcome: *const c_char,
+    transcript: *const c_char,
+    locale: *const c_char,
+    route_provider: *const c_char,
+    duration_ms: u32,
+    error_code: *const c_char,
+    injection_disposition: *const c_char,
+) -> u8 {
+    let outcome_raw = match parse_utf8_input(outcome) {
+        Ok(value) => value,
+        Err(error) => return error as u8,
+    };
+    let Some(parsed_outcome) = parse_session_outcome(&outcome_raw) else {
+        return FfiStatusCode::InvalidArgument as u8;
+    };
+    let transcript = match parse_utf8_input(transcript) {
+        Ok(value) => value,
+        Err(error) => return error as u8,
+    };
+    let locale = match parse_utf8_input(locale) {
+        Ok(value) => value,
+        Err(error) => return error as u8,
+    };
+    let route_provider = match parse_utf8_input(route_provider) {
+        Ok(value) => value,
+        Err(error) => return error as u8,
+    };
+
+    let error_code = match parse_utf8_optional_input(error_code) {
+        Ok(value) => none_if_empty(value),
+        Err(error) => return error as u8,
+    };
+    let injection_disposition = match parse_utf8_optional_input(injection_disposition) {
+        Ok(value) => match none_if_empty(value) {
+            None => None,
+            Some(normalized) => {
+                let Some(parsed) = parse_injection_disposition(&normalized) else {
+                    return FfiStatusCode::InvalidArgument as u8;
+                };
+                Some(parsed)
+            }
+        },
+        Err(error) => return error as u8,
+    };
+
+    let Ok(mut runtime) = runtime_mutex().lock() else {
+        return FfiStatusCode::Internal as u8;
+    };
+
+    runtime.record_session_history_entry(&SessionHistoryRecordInput {
+        duration_ms: if duration_ms == 0 {
+            None
+        } else {
+            Some(duration_ms)
+        },
+        locale: &locale,
+        route_provider: &route_provider,
+        outcome: parsed_outcome,
+        transcript: &transcript,
+        error_code: error_code.as_deref(),
+        injection_disposition,
+    });
+    FfiStatusCode::Success as u8
+}
+
+/// Marks the latest confirmed session-history record as undone, if available.
+#[unsafe(no_mangle)]
+pub extern "C" fn syntic_session_history_mark_last_confirmed_undone() -> u8 {
+    let Ok(mut runtime) = runtime_mutex().lock() else {
+        return FfiStatusCode::Internal as u8;
+    };
+
+    runtime.mark_last_confirmed_session_as_undone();
+    FfiStatusCode::Success as u8
+}
+
+/// Returns a heap-allocated JSON string with session-history records after the given ID.
+///
+/// The caller owns the returned pointer and must release it using
+/// `syntic_string_free`.
+#[unsafe(no_mangle)]
+pub extern "C" fn syntic_session_history_since_json(
+    last_seen_record_id: u64,
+    limit: u16,
+) -> *mut c_char {
+    let payload = with_runtime(|runtime| {
+        let records =
+            runtime.session_history_since(last_seen_record_id, normalized_event_limit(limit));
+        session_history_payload_json(&records)
+    });
+
+    match payload {
+        Ok(json) => to_heap_c_string(json),
+        Err(_) => ptr::null_mut(),
+    }
+}
+
+/// Clears the core runtime session-history journal.
+///
+/// Returns a numeric FFI status code.
+#[unsafe(no_mangle)]
+pub extern "C" fn syntic_session_history_clear() -> u8 {
+    let Ok(mut runtime) = runtime_mutex().lock() else {
+        return FfiStatusCode::Internal as u8;
+    };
+
+    runtime.clear_session_history();
+    FfiStatusCode::Success as u8
+}
+
 /// Resets dictation state to `idle`.
 ///
 /// Returns a numeric FFI status code.
@@ -824,7 +1000,9 @@ mod tests {
         syntic_dictation_append_partial, syntic_dictation_cancel, syntic_dictation_confirm,
         syntic_dictation_finalize_review, syntic_dictation_reset, syntic_dictation_start,
         syntic_dictation_state_json, syntic_domain_events_clear, syntic_domain_events_since_json,
-        syntic_runtime_health_json, syntic_string_free, syntic_stt_route_json,
+        syntic_runtime_health_json, syntic_session_history_clear,
+        syntic_session_history_mark_last_confirmed_undone, syntic_session_history_record,
+        syntic_session_history_since_json, syntic_string_free, syntic_stt_route_json,
         syntic_tool_runtime_signals_since_json,
     };
 
@@ -1133,5 +1311,103 @@ mod tests {
 
         // SAFETY: `payload_pointer` came from `syntic_core_events_since_json`.
         unsafe { syntic_string_free(payload_pointer) };
+    }
+
+    #[test]
+    fn session_history_record_is_exposed_via_feed_json() {
+        let _guard = test_guard();
+        assert_eq!(syntic_session_history_clear(), 0);
+
+        let outcome = CString::new("confirmed").expect("cstring");
+        let transcript = CString::new("hello history").expect("cstring");
+        let locale = CString::new("de-DE").expect("cstring");
+        let provider = CString::new("apple_speech_recognizer").expect("cstring");
+        let injection = CString::new("injected").expect("cstring");
+        assert_eq!(
+            syntic_session_history_record(
+                outcome.as_ptr(),
+                transcript.as_ptr(),
+                locale.as_ptr(),
+                provider.as_ptr(),
+                940,
+                ptr::null(),
+                injection.as_ptr()
+            ),
+            0
+        );
+
+        let payload_pointer = syntic_session_history_since_json(0, 20);
+        assert!(!payload_pointer.is_null());
+
+        // SAFETY: pointer returned by `syntic_session_history_since_json` is a valid C string.
+        let payload = unsafe { CStr::from_ptr(payload_pointer) };
+        let payload_text = payload.to_str().expect("utf8");
+        assert!(payload_text.contains("\"outcome\":\"confirmed\""));
+        assert!(payload_text.contains("\"transcript\":\"hello history\""));
+        assert!(payload_text.contains("\"injection_disposition\":\"injected\""));
+        assert!(payload_text.contains("\"duration_ms\":940"));
+
+        // SAFETY: `payload_pointer` came from `syntic_session_history_since_json`.
+        unsafe { syntic_string_free(payload_pointer) };
+    }
+
+    #[test]
+    fn session_history_mark_undone_updates_latest_confirmed_record() {
+        let _guard = test_guard();
+        assert_eq!(syntic_session_history_clear(), 0);
+
+        let outcome = CString::new("confirmed").expect("cstring");
+        let transcript = CString::new("undo me").expect("cstring");
+        let locale = CString::new("de-DE").expect("cstring");
+        let provider = CString::new("apple_speech_recognizer").expect("cstring");
+        assert_eq!(
+            syntic_session_history_record(
+                outcome.as_ptr(),
+                transcript.as_ptr(),
+                locale.as_ptr(),
+                provider.as_ptr(),
+                0,
+                ptr::null(),
+                ptr::null()
+            ),
+            0
+        );
+
+        assert_eq!(syntic_session_history_mark_last_confirmed_undone(), 0);
+
+        let payload_pointer = syntic_session_history_since_json(0, 20);
+        assert!(!payload_pointer.is_null());
+
+        // SAFETY: pointer returned by `syntic_session_history_since_json` is a valid C string.
+        let payload = unsafe { CStr::from_ptr(payload_pointer) };
+        let payload_text = payload.to_str().expect("utf8");
+        assert!(payload_text.contains("\"undone_at_ms\":"));
+        assert!(!payload_text.contains("\"undone_at_ms\":null"));
+
+        // SAFETY: `payload_pointer` came from `syntic_session_history_since_json`.
+        unsafe { syntic_string_free(payload_pointer) };
+    }
+
+    #[test]
+    fn session_history_record_rejects_unknown_outcome() {
+        let _guard = test_guard();
+        assert_eq!(syntic_session_history_clear(), 0);
+
+        let outcome = CString::new("unexpected").expect("cstring");
+        let transcript = CString::new("bad").expect("cstring");
+        let locale = CString::new("de-DE").expect("cstring");
+        let provider = CString::new("apple_speech_recognizer").expect("cstring");
+        assert_eq!(
+            syntic_session_history_record(
+                outcome.as_ptr(),
+                transcript.as_ptr(),
+                locale.as_ptr(),
+                provider.as_ptr(),
+                0,
+                ptr::null(),
+                ptr::null()
+            ),
+            22
+        );
     }
 }

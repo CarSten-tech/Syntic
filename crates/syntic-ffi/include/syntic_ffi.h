@@ -15,6 +15,7 @@ enum SynticFfiStatusCode {
   SYNTIC_STATUS_DICTATION_NOT_ACTIVE = 13,
   SYNTIC_STATUS_NULL_POINTER = 20,
   SYNTIC_STATUS_INVALID_UTF8 = 21,
+  SYNTIC_STATUS_INVALID_ARGUMENT = 22,
   SYNTIC_STATUS_INTERNAL = 255
 };
 
@@ -50,8 +51,18 @@ uint8_t syntic_core_event_report_telemetry(const char *source,
                                            const char *status,
                                            const char *context_json,
                                            uint32_t value_ms);
+uint8_t syntic_session_history_record(const char *outcome,
+                                      const char *transcript,
+                                      const char *locale,
+                                      const char *route_provider,
+                                      uint32_t duration_ms,
+                                      const char *error_code,
+                                      const char *injection_disposition);
+uint8_t syntic_session_history_mark_last_confirmed_undone(void);
+char *syntic_session_history_since_json(uint64_t last_seen_record_id, uint16_t limit);
 uint8_t syntic_core_events_clear(void);
 uint8_t syntic_domain_events_clear(void);
+uint8_t syntic_session_history_clear(void);
 
 // Dictation flow state transitions.
 uint8_t syntic_dictation_reset(void);

@@ -373,6 +373,39 @@ private final class FakeCoreBridge: SynticCoreVersionProviding {
         return 0
     }
 
+    func reportCoreSessionHistoryRecord(
+        outcome: String,
+        transcript: String,
+        locale: String,
+        routeProvider: String,
+        durationMs: UInt32?,
+        errorCode: String?,
+        injectionDisposition: String?
+    ) -> UInt8 {
+        _ = outcome
+        _ = transcript
+        _ = locale
+        _ = routeProvider
+        _ = durationMs
+        _ = errorCode
+        _ = injectionDisposition
+        return 0
+    }
+
+    func markCoreSessionHistoryLastConfirmedUndone() -> UInt8 {
+        0
+    }
+
+    func coreSessionHistorySinceJSON(lastSeenRecordID: UInt64, limit: UInt16) -> String {
+        _ = lastSeenRecordID
+        _ = limit
+        return "{\"records\":[]}"
+    }
+
+    func coreSessionHistoryClear() -> UInt8 {
+        0
+    }
+
     func sttRouteJSON(
         preferenceMode: UInt8,
         sensitiveModeEnabled: Bool,

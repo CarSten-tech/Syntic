@@ -238,6 +238,17 @@ final class TechnicalE2EPipeline: ObservableObject {
             return
         }
 
+        let coreUndoStatus = coreBridge.markCoreSessionHistoryLastConfirmedUndone()
+        if coreUndoStatus != 0 {
+            appendLog("Core session-history undo mirror failed: status=\(coreUndoStatus)")
+            emitTelemetry(
+                category: "session_history",
+                action: "core_undo_mirror",
+                status: "degraded",
+                context: ["status": "\(coreUndoStatus)"]
+            )
+        }
+
         _ = coreBridge.dictationReset()
         let startStatus = coreBridge.dictationStart()
         let reviewStatus = coreBridge.dictationFinalizeReview(restoredRecord.transcript)
@@ -944,15 +955,36 @@ final class TechnicalE2EPipeline: ObservableObject {
         errorCode: String?,
         injectionDisposition: SessionInjectionDisposition?
     ) {
+        let durationMs = currentSessionDurationMs()
         sessionHistoryController.record(
             outcome: outcome,
             transcript: transcript,
             locale: settingsController.locale.rawValue,
             routeProvider: activeRouteProvider,
-            durationMs: currentSessionDurationMs(),
+            durationMs: durationMs,
             errorCode: errorCode,
             injectionDisposition: injectionDisposition
         )
+
+        let coreMirrorStatus = coreBridge.reportCoreSessionHistoryRecord(
+            outcome: outcome.rawValue,
+            transcript: transcript,
+            locale: settingsController.locale.rawValue,
+            routeProvider: activeRouteProvider,
+            durationMs: durationMs,
+            errorCode: errorCode,
+            injectionDisposition: injectionDisposition?.rawValue
+        )
+        if coreMirrorStatus != 0 {
+            appendLog("Core session-history mirror failed: status=\(coreMirrorStatus)")
+            emitTelemetry(
+                category: "session_history",
+                action: "core_record_mirror",
+                status: "degraded",
+                context: ["status": "\(coreMirrorStatus)"]
+            )
+        }
+
         activeSessionStartedAtMs = nil
         activeRouteProvider = "unknown"
     }

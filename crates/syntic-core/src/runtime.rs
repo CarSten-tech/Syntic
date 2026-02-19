@@ -3,6 +3,9 @@
 use crate::dictation::DictationSessionController;
 use crate::domain::{DomainEvent, DomainEventBus, ToolRuntimeSignal};
 use crate::events::{CoreEvent, CoreEventJournal};
+use crate::session_history::{
+    SessionHistoryJournal, SessionHistoryRecord, SessionHistoryRecordInput,
+};
 
 /// Semantic version of the current core runtime.
 pub const CORE_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -21,6 +24,7 @@ pub struct CoreRuntime {
     dictation_session: DictationSessionController,
     core_events: CoreEventJournal,
     domain_event_bus: DomainEventBus,
+    session_history: SessionHistoryJournal,
 }
 
 impl CoreRuntime {
@@ -135,6 +139,33 @@ impl CoreRuntime {
         self.domain_event_bus
             .tool_runtime_signals_since(last_seen_signal_id, limit)
     }
+
+    pub fn record_session_history_entry(&mut self, input: &SessionHistoryRecordInput<'_>) -> u64 {
+        self.session_history.record(input)
+    }
+
+    pub fn mark_last_confirmed_session_as_undone(&mut self) -> Option<u64> {
+        self.session_history.mark_last_confirmed_as_undone()
+    }
+
+    pub fn clear_session_history(&mut self) {
+        self.session_history.clear();
+    }
+
+    #[must_use]
+    pub fn session_history_since(
+        &self,
+        last_seen_record_id: u64,
+        limit: usize,
+    ) -> Vec<SessionHistoryRecord> {
+        self.session_history
+            .records_since(last_seen_record_id, limit)
+    }
+
+    #[must_use]
+    pub fn session_history_recent(&self, limit: usize) -> Vec<SessionHistoryRecord> {
+        self.session_history.records_recent(limit)
+    }
 }
 
 #[cfg(test)]
@@ -142,6 +173,9 @@ mod tests {
     use super::{CORE_VERSION, CoreRuntime};
     use crate::domain::{DomainEventPayload, ToolRuntimeAction};
     use crate::events::CoreEventPayload;
+    use crate::session_history::{
+        SessionHistoryRecordInput, SessionInjectionDisposition, SessionOutcome,
+    };
 
     #[test]
     fn health_snapshot_exposes_core_version() {
@@ -257,5 +291,39 @@ mod tests {
             tool_signals[0].action,
             ToolRuntimeAction::CommitPendingToolInvocations
         );
+    }
+
+    #[test]
+    fn runtime_exposes_session_history_entries_and_undo_marks() {
+        let mut runtime = CoreRuntime::new();
+        runtime.record_session_history_entry(&SessionHistoryRecordInput {
+            duration_ms: Some(750),
+            locale: "de-DE",
+            route_provider: "apple_speech_recognizer",
+            outcome: SessionOutcome::Confirmed,
+            transcript: "hello world",
+            error_code: None,
+            injection_disposition: Some(SessionInjectionDisposition::Injected),
+        });
+        runtime.record_session_history_entry(&SessionHistoryRecordInput {
+            duration_ms: None,
+            locale: "de-DE",
+            route_provider: "apple_speech_recognizer",
+            outcome: SessionOutcome::Cancelled,
+            transcript: "cancelled sample",
+            error_code: Some("cancelled_by_user"),
+            injection_disposition: None,
+        });
+
+        let records = runtime.session_history_since(0, 10);
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].outcome, SessionOutcome::Confirmed);
+        assert_eq!(records[1].outcome, SessionOutcome::Cancelled);
+
+        let undone_id = runtime.mark_last_confirmed_session_as_undone();
+        assert_eq!(undone_id, Some(records[0].id));
+
+        let updated_records = runtime.session_history_since(0, 10);
+        assert!(updated_records[0].undone_at_ms.is_some());
     }
 }

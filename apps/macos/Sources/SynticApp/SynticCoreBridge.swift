@@ -35,6 +35,18 @@ protocol SynticCoreVersionProviding {
         contextJSON: String,
         valueMs: UInt32
     ) -> UInt8
+    func reportCoreSessionHistoryRecord(
+        outcome: String,
+        transcript: String,
+        locale: String,
+        routeProvider: String,
+        durationMs: UInt32?,
+        errorCode: String?,
+        injectionDisposition: String?
+    ) -> UInt8
+    func markCoreSessionHistoryLastConfirmedUndone() -> UInt8
+    func coreSessionHistorySinceJSON(lastSeenRecordID: UInt64, limit: UInt16) -> String
+    func coreSessionHistoryClear() -> UInt8
     func sttRouteJSON(
         preferenceMode: UInt8,
         sensitiveModeEnabled: Bool,
@@ -205,6 +217,52 @@ struct SynticCoreBridge: SynticCoreVersionProviding {
         }
     }
 
+    func reportCoreSessionHistoryRecord(
+        outcome: String,
+        transcript: String,
+        locale: String,
+        routeProvider: String,
+        durationMs: UInt32?,
+        errorCode: String?,
+        injectionDisposition: String?
+    ) -> UInt8 {
+        outcome.withCString { outcomePointer in
+            transcript.withCString { transcriptPointer in
+                locale.withCString { localePointer in
+                    routeProvider.withCString { routeProviderPointer in
+                        withOptionalCString(errorCode) { errorCodePointer in
+                            withOptionalCString(injectionDisposition) { injectionDispositionPointer in
+                                syntic_session_history_record(
+                                    outcomePointer,
+                                    transcriptPointer,
+                                    localePointer,
+                                    routeProviderPointer,
+                                    durationMs ?? 0,
+                                    errorCodePointer,
+                                    injectionDispositionPointer
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    func markCoreSessionHistoryLastConfirmedUndone() -> UInt8 {
+        syntic_session_history_mark_last_confirmed_undone()
+    }
+
+    func coreSessionHistorySinceJSON(lastSeenRecordID: UInt64, limit: UInt16) -> String {
+        readHeapJsonPayload(fallback: "{\"records\":[]}") {
+            syntic_session_history_since_json(lastSeenRecordID, limit)
+        }
+    }
+
+    func coreSessionHistoryClear() -> UInt8 {
+        syntic_session_history_clear()
+    }
+
     func sttRouteJSON(
         preferenceMode: UInt8,
         sensitiveModeEnabled: Bool,
@@ -236,5 +294,14 @@ private extension SynticCoreBridge {
         }
 
         return String(cString: payloadPointer)
+    }
+
+    func withOptionalCString<T>(_ value: String?, _ body: (UnsafePointer<CChar>?) -> T) -> T {
+        guard let value, !value.isEmpty else {
+            return body(nil)
+        }
+        return value.withCString { pointer in
+            body(pointer)
+        }
     }
 }
