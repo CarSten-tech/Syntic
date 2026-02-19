@@ -34,14 +34,17 @@ Abgrenzen, welche Kernbausteine vor der ersten echten Produkt-UI/UX technisch st
   - STT-Routing über Core-Entscheidung
   - Review-State Übergang im Dictation-Core
   - Confirm -> TextInjection (AX -> CGEvent -> Clipboard-Fallback)
+- Persistente App-Settings (Application Support / `settings.json`):
+  - `locale`
+  - `routingMode` (`auto/local/cloud`)
+  - `sensitiveModeEnabled`
+  - Schema-Version + Corrupt-Recovery mit Backup-Datei
 - Build- und Testkette (Rust + macOS Swift Build) grün.
 
 ## Noch vor erster Produkt-UI nötig
 
-- Persistenz für Settings/Session-Daten (SQLite + Migrationspfad).
 - Fehler-/Permission-Routing in Core-Events statt rein lokalem Debug-Status.
 - E2E-Technikfluss erweitern:
-  - Hotkey -> Audio -> STT -> Reviewing State -> Confirm -> Injection
   - Review Cancel/Fail in Domain-Events ausleitbar machen
 - Entitlements/Signing-Blocker aus Spike 4 auflösen.
 
@@ -52,7 +55,7 @@ Abgrenzen, welche Kernbausteine vor der ersten echten Produkt-UI/UX technisch st
 
 ## Nächster technischer Fokus
 
-1. Persistente Settings (Locale, Routing-Mode, Sensitive-Mode) einführen.
-2. Fehler-/Permission-Routing als Core-Events modellieren.
-3. Entitlements/Signing-Blocker aus Spike 4 auflösen.
-4. E2E-Telemetrie aus Debug-UI in strukturierte Logs/Events überführen.
+1. Fehler-/Permission-Routing als Core-Events modellieren.
+2. Entitlements/Signing-Blocker aus Spike 4 auflösen.
+3. E2E-Telemetrie aus Debug-UI in strukturierte Logs/Events überführen.
+4. Persistenz für Session-Daten (History/Undo) mit Migrationspfad einführen.

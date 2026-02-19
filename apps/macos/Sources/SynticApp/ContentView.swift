@@ -5,6 +5,7 @@ struct ContentView: View {
     @Environment(\.openWindow) private var openWindow
 
     let coreBridge: SynticCoreVersionProviding
+    @ObservedObject var settingsController: AppSettingsController
     @StateObject private var technicalE2EPipeline: TechnicalE2EPipeline
     private let finderContextAdapter = MacOSFinderContextAdapter()
 
@@ -16,10 +17,11 @@ struct ContentView: View {
     @State private var commandSafetyPayload = ""
     @State private var finderSnapshotSummary = "-"
 
-    init(coreBridge: SynticCoreVersionProviding) {
+    init(coreBridge: SynticCoreVersionProviding, settingsController: AppSettingsController) {
         self.coreBridge = coreBridge
+        self.settingsController = settingsController
         _technicalE2EPipeline = StateObject(
-            wrappedValue: TechnicalE2EPipeline(coreBridge: coreBridge)
+            wrappedValue: TechnicalE2EPipeline(coreBridge: coreBridge, settingsController: settingsController)
         )
     }
 
@@ -124,10 +126,25 @@ struct ContentView: View {
 
             HStack {
                 Toggle("Network verfügbar", isOn: $technicalE2EPipeline.networkAvailable)
-                Toggle("Sensitive Mode", isOn: $technicalE2EPipeline.sensitiveModeEnabled)
+                Toggle("Sensitive Mode", isOn: $settingsController.sensitiveModeEnabled)
             }
 
-            TextField("Locale", text: $technicalE2EPipeline.locale)
+            Picker("Locale", selection: $settingsController.locale) {
+                ForEach(DictationLocale.allCases) { locale in
+                    Text(locale.displayName).tag(locale)
+                }
+            }
+
+            Picker("Routing Mode", selection: $settingsController.routingMode) {
+                ForEach(STTRoutingMode.allCases) { mode in
+                    Text(mode.displayName).tag(mode)
+                }
+            }
+
+            Text("Settings: \(settingsController.persistenceSummary)")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
 
             HStack {
                 Button(technicalE2EPipeline.isHotkeyListening ? "Hotkey Listener stoppen" : "Hotkey Listener starten") {

@@ -12,11 +12,10 @@ final class TechnicalE2EPipeline: ObservableObject {
     @Published private(set) var dictationStateJSON = "{}"
     @Published private(set) var logs: [String] = []
 
-    @Published var locale = "de-DE"
     @Published var networkAvailable = true
-    @Published var sensitiveModeEnabled = false
 
     private let coreBridge: SynticCoreVersionProviding
+    private let settingsController: AppSettingsController
     private let audioAdapter: AudioCapturing
     private let hotkeyAdapter: HotkeyListening
     private let localSttAdapter: STTTranscribing
@@ -27,6 +26,7 @@ final class TechnicalE2EPipeline: ObservableObject {
 
     init(
         coreBridge: SynticCoreVersionProviding,
+        settingsController: AppSettingsController,
         audioAdapter: AudioCapturing = MacOSAudioCaptureAdapter(),
         hotkeyAdapter: HotkeyListening = MacOSGlobalHotkeyAdapter(),
         localSttAdapter: STTTranscribing = LocalStubSTTAdapter(),
@@ -34,6 +34,7 @@ final class TechnicalE2EPipeline: ObservableObject {
         textInjectionAdapter: TextInjecting = MacOSTextInjectionAdapter()
     ) {
         self.coreBridge = coreBridge
+        self.settingsController = settingsController
         self.audioAdapter = audioAdapter
         self.hotkeyAdapter = hotkeyAdapter
         self.localSttAdapter = localSttAdapter
@@ -191,8 +192,8 @@ final class TechnicalE2EPipeline: ObservableObject {
         isTranscribing = true
 
         latestRouteJSON = coreBridge.sttRouteJSON(
-            preferenceMode: 2,
-            sensitiveModeEnabled: sensitiveModeEnabled,
+            preferenceMode: settingsController.routingMode.ffiPreferenceMode,
+            sensitiveModeEnabled: settingsController.sensitiveModeEnabled,
             networkAvailable: networkAvailable,
             utteranceDurationMs: captureResult.durationMs
         )
@@ -204,7 +205,7 @@ final class TechnicalE2EPipeline: ObservableObject {
             "Listening stopped via \(triggerSource). Routing to \(selectedAdapter.providerIdentifier), duration=\(captureResult.durationMs)ms."
         )
 
-        selectedAdapter.transcribe(capture: captureResult, locale: locale) { [weak self] result in
+        selectedAdapter.transcribe(capture: captureResult, locale: settingsController.locale.rawValue) { [weak self] result in
             Task { @MainActor [weak self] in
                 self?.completeTranscription(result)
             }
