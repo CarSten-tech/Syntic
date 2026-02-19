@@ -6,6 +6,16 @@ Stand: 2026-02-19
 
 Reproduzierbarer Developer-ID Build mit Hardened Runtime, Verifikation und optionaler Notarization.
 
+## Lokale App (ohne Developer-ID)
+
+```bash
+cd /Users/carstenrheidt/Syntic
+./scripts/release/macos-package-local-app.sh
+open dist/macos-local/SynticLocal.app
+```
+
+Dieser Pfad ist nur für lokale Nutzung/Tests gedacht (ad-hoc signiert, nicht notarisiert).
+
 ## Vorbedingungen
 
 - Vollständiges Xcode aktiv (`xcode-select -p` zeigt auf `/Applications/Xcode.app/...`)

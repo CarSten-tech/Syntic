@@ -60,6 +60,7 @@ Abgrenzen, welche Kernbausteine vor der ersten echten Produkt-UI/UX technisch st
   - strukturierte Runtime-Resultate inkl. `rejectionCode`
 - Signing/Notarization-Grundlage für macOS:
   - Packaging-Profil (`Info.plist` + Entitlements)
+  - Lokaler Packaging-Runner ohne Developer-ID (`scripts/release/macos-package-local-app.sh`)
   - Release-Runner (`scripts/release/macos-package-sign-notarize.sh`)
   - Erweiterter Spike-04 Preflight mit Fail-fast Checks
   - Release-Runner startet Preflight verpflichtend vor Build/Sign/Notarize

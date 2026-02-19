@@ -9,6 +9,9 @@ Cargo.lock
 .build/
 .swiftpm/
 
+# Local packaging artifacts
+dist/
+
 # Xcode
 DerivedData/
 *.xcuserstate
