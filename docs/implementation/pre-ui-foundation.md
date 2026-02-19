@@ -37,15 +37,13 @@ Abgrenzen, welche Kernbausteine vor der ersten echten Produkt-UI/UX technisch st
 
 ## Noch vor erster Produkt-UI nötig
 
-- Adapter-Implementierungen statt Probes:
-  - GlobalHotkeyAdapter
-  - AudioCaptureAdapter
-  - STTAdapter (lokal/cloud)
-  - TextInjectionAdapter mit Fallback-Strategie
 - Persistenz für Settings/Session-Daten (SQLite + Migrationspfad).
 - Fehler-/Permission-Routing in Core-Events statt rein lokalem Debug-Status.
-- E2E-Technikfluss ohne UX-Polish:
+- E2E-Technikfluss erweitern:
   - Hotkey -> Audio -> STT -> Reviewing State -> Confirm -> Injection Request
+  - Confirm-Flow mit TextInjectionAdapter verdrahten
+  - Review Cancel/Fail in Domain-Events ausleitbar machen
+- Entitlements/Signing-Blocker aus Spike 4 auflösen.
 
 ## Bewusst noch nicht begonnen
 
@@ -54,7 +52,7 @@ Abgrenzen, welche Kernbausteine vor der ersten echten Produkt-UI/UX technisch st
 
 ## Nächster technischer Fokus
 
-1. TextInjection-Adapter aus Spike 1 Ergebnissen produktiv kapseln.
-2. FinderContext-Adapter aus Spike 2 Ergebnisregeln ableiten.
-3. STT-Latenzentscheid (Spike 3) in Routing-Regeln gießen.
+1. Confirm -> TextInjection als durchgehenden E2E-Schritt anbinden.
+2. Persistente Settings (Locale, Routing-Mode, Sensitive-Mode) einführen.
+3. Fehler-/Permission-Routing als Core-Events modellieren.
 4. Entitlements/Signing-Blocker aus Spike 4 auflösen.
