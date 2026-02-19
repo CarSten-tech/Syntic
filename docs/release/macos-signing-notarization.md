@@ -21,6 +21,7 @@ cd /Users/carstenrheidt/Syntic
 ```
 
 Der Runner beendet mit Exit-Code `1`, wenn ein kritischer Check fehlschlägt.
+Für CI/Release-Gates kann `REQUIRE_NOTARYTOOL_PROFILE=1` gesetzt werden.
 
 ## Build + Sign + Notarize
 
@@ -30,6 +31,9 @@ export CODESIGN_IDENTITY="Developer ID Application: YOUR NAME (TEAMID)"
 export NOTARYTOOL_PROFILE="syntic-notary"
 ./scripts/release/macos-package-sign-notarize.sh
 ```
+
+Der Release-Runner führt den Spike-04-Preflight automatisch als ersten Schritt aus
+und bricht bei fehlenden Signing-/Notary-Voraussetzungen sofort ab.
 
 ## Lokaler Dry-Run ohne Notarization
 

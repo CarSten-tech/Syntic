@@ -33,6 +33,14 @@ cd /Users/carstenrheidt/Syntic
 ./scripts/spikes/spike-04-notarization-preflight.sh
 ```
 
+Strikter Modus für Release/CI:
+
+```bash
+cd /Users/carstenrheidt/Syntic
+REQUIRE_NOTARYTOOL_PROFILE=1 NOTARYTOOL_PROFILE="syntic-notary" \
+  ./scripts/spikes/spike-04-notarization-preflight.sh
+```
+
 ## Release-Runner
 
 ```bash
@@ -46,13 +54,13 @@ export NOTARYTOOL_PROFILE="syntic-notary"
 
 | Check | Erwartung | Status | Details |
 |---|---|---|---|
-| Xcode selected | `/Applications/Xcode.app/...` | Automatisiert | Preflight-Check vorhanden |
+| Xcode selected | `/Applications/Xcode.app/...` | Automatisiert | inkl. SDK-Platform-Path-Check |
 | codesign available | vorhanden | Automatisiert | Preflight-Check vorhanden |
 | notarytool available | vorhanden | Automatisiert | Preflight-Check vorhanden |
 | codesign identities | >=1 Developer ID | Automatisiert | Preflight-Check vorhanden |
 | security unlock state | nutzbar im Build | Offen | abhängig von lokaler Maschine/CI-Keychain |
-| Packaging Info.plist | vorhanden inkl. Usage-Keys | Erledigt | `apps/macos/Packaging/Info.plist` |
-| Entitlements-Profil | minimal + versioniert | Erledigt | `apps/macos/Packaging/SynticRelease.entitlements` |
+| Packaging Info.plist | vorhanden inkl. Usage-Keys | Erledigt | inkl. `plutil -lint` + Bundle-ID-Formatcheck |
+| Entitlements-Profil | minimal + versioniert | Erledigt | inkl. `plutil -lint` |
 | Sign/Notarize Runner | reproduzierbar | Erledigt | `scripts/release/macos-package-sign-notarize.sh` |
 
 ## Entscheidungsregeln

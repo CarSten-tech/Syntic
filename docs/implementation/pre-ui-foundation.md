@@ -50,16 +50,19 @@ Abgrenzen, welche Kernbausteine vor der ersten echten Produkt-UI/UX technisch st
 - E2E-Telemetrie als strukturierte Events/Logs:
   - Core-Telemetry-Events (`category/action/status/context/value_ms`)
   - NDJSON-Log unter `Application Support/Syntic/logs/e2e-telemetry.ndjson`
+- Domain-Event-Ketten bis Tool Runtime:
+  - `review_cancel` -> Abort-Queue/Task-Cancellation
+  - `review_confirm` -> Commit/Execution-Start der Pending Tool-Invocations
+  - strukturierte Runtime-Resultate inkl. `rejectionCode`
 - Signing/Notarization-Grundlage für macOS:
   - Packaging-Profil (`Info.plist` + Entitlements)
   - Release-Runner (`scripts/release/macos-package-sign-notarize.sh`)
   - Erweiterter Spike-04 Preflight mit Fail-fast Checks
+  - Release-Runner startet Preflight verpflichtend vor Build/Sign/Notarize
 - Build- und Testkette (Rust + macOS Swift Build) grün.
 
 ## Noch vor erster Produkt-UI nötig
 
-- E2E-Technikfluss erweitern:
-  - Review Cancel in Domain-Events ausleitbar machen
 - Entitlements/Signing operativ schließen:
   - Team-/Issuer-Credentials und CI-Secrets bereitstellen
   - ersten erfolgreichen Notarization-Run dokumentieren
@@ -72,6 +75,5 @@ Abgrenzen, welche Kernbausteine vor der ersten echten Produkt-UI/UX technisch st
 ## Nächster technischer Fokus
 
 1. Entitlements/Signing operativ abschließen (Credentials + erster grüner Notarization-Lauf).
-2. Review Cancel als Domain-Event-Kette bis Tool Runtime verdrahten.
-3. Event-Feed konsumierend in Produkt-UI statt Debug-Textprojektion.
-4. Session-History in Core/FFI spiegeln (statt nur Shell-Persistenz) für plattformübergreifende Konsistenz.
+2. Event-Feed konsumierend in Produkt-UI statt Debug-Textprojektion.
+3. Session-History in Core/FFI spiegeln (statt nur Shell-Persistenz) für plattformübergreifende Konsistenz.

@@ -19,24 +19,58 @@ APP_CONTENTS="${APP_BUNDLE}/Contents"
 APP_MACOS="${APP_CONTENTS}/MacOS"
 APP_PLIST="${APP_CONTENTS}/Info.plist"
 ZIP_PATH="${DIST_DIR}/${APP_NAME}.zip"
+PRE_FLIGHT_SCRIPT="${REPO_ROOT}/scripts/spikes/spike-04-notarization-preflight.sh"
 
-SWIFT_BUILD_PATH="${REPO_ROOT}/apps/macos/.build/release/${BINARY_NAME}"
+require_file() {
+  local path="$1"
+  if [[ ! -f "${path}" ]]; then
+    echo "error: missing ${path}"
+    exit 1
+  fi
+}
 
-if [[ ! -f "${INFO_PLIST_TEMPLATE}" ]]; then
-  echo "error: missing ${INFO_PLIST_TEMPLATE}"
+require_cmd() {
+  local bin_name="$1"
+  if ! command -v "${bin_name}" >/dev/null 2>&1; then
+    echo "error: required command missing: ${bin_name}"
+    exit 1
+  fi
+}
+
+require_file "${INFO_PLIST_TEMPLATE}"
+require_file "${ENTITLEMENTS_PLIST}"
+require_file "${PRE_FLIGHT_SCRIPT}"
+require_cmd swift
+require_cmd xcrun
+require_cmd security
+require_cmd codesign
+require_cmd spctl
+require_cmd ditto
+require_cmd plutil
+
+if [[ -z "${CODESIGN_IDENTITY:-}" ]]; then
+  echo "error: CODESIGN_IDENTITY is required"
+  echo "hint: export CODESIGN_IDENTITY='Developer ID Application: Your Name (TEAMID)'"
   exit 1
 fi
 
-if [[ ! -f "${ENTITLEMENTS_PLIST}" ]]; then
-  echo "error: missing ${ENTITLEMENTS_PLIST}"
-  exit 1
+echo "==> Preflight (signing/notarization prerequisites)"
+REQUIRE_NOTARYTOOL_PROFILE=0
+if [[ "${SKIP_NOTARIZATION:-0}" != "1" ]]; then
+  REQUIRE_NOTARYTOOL_PROFILE=1
 fi
+REQUIRE_NOTARYTOOL_PROFILE="${REQUIRE_NOTARYTOOL_PROFILE}" \
+  CODESIGN_IDENTITY="${CODESIGN_IDENTITY}" \
+  NOTARYTOOL_PROFILE="${NOTARYTOOL_PROFILE:-}" \
+  "${PRE_FLIGHT_SCRIPT}"
 
 echo "==> Build Rust FFI (release)"
 "${REPO_ROOT}/scripts/build-ffi.sh" release
 
 echo "==> Build Swift shell (release)"
 swift build --configuration release --package-path "${REPO_ROOT}/apps/macos"
+SWIFT_BIN_PATH="$(swift build --configuration release --package-path "${REPO_ROOT}/apps/macos" --show-bin-path)"
+SWIFT_BUILD_PATH="${SWIFT_BIN_PATH}/${BINARY_NAME}"
 
 if [[ ! -x "${SWIFT_BUILD_PATH}" ]]; then
   echo "error: missing executable ${SWIFT_BUILD_PATH}"
@@ -53,12 +87,6 @@ cp "${INFO_PLIST_TEMPLATE}" "${APP_PLIST}"
 /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier ${BUNDLE_ID}" "${APP_PLIST}"
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString ${VERSION}" "${APP_PLIST}"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${BUILD_NUMBER}" "${APP_PLIST}"
-
-if [[ -z "${CODESIGN_IDENTITY:-}" ]]; then
-  echo "error: CODESIGN_IDENTITY is required"
-  echo "hint: export CODESIGN_IDENTITY='Developer ID Application: Your Name (TEAMID)'"
-  exit 1
-fi
 
 echo "==> Sign app bundle with hardened runtime"
 codesign \
@@ -90,9 +118,37 @@ if [[ -z "${NOTARYTOOL_PROFILE:-}" ]]; then
 fi
 
 echo "==> Submit for notarization"
+NOTARY_OUTPUT_JSON="$(mktemp -t syntic-notary-output.XXXXXX.json)"
+cleanup_notary_output() {
+  rm -f "${NOTARY_OUTPUT_JSON}"
+}
+trap cleanup_notary_output EXIT
+
+set +e
 xcrun notarytool submit "${ZIP_PATH}" \
   --keychain-profile "${NOTARYTOOL_PROFILE}" \
-  --wait
+  --wait \
+  --output-format json >"${NOTARY_OUTPUT_JSON}" 2>&1
+NOTARY_SUBMIT_EXIT=$?
+set -e
+if (( NOTARY_SUBMIT_EXIT != 0 )); then
+  echo "error: notarytool submit failed (exit ${NOTARY_SUBMIT_EXIT})"
+  cat "${NOTARY_OUTPUT_JSON}"
+  exit "${NOTARY_SUBMIT_EXIT}"
+fi
+
+cat "${NOTARY_OUTPUT_JSON}"
+
+NOTARY_STATUS="$(plutil -extract status raw -o - "${NOTARY_OUTPUT_JSON}" 2>/dev/null || true)"
+NOTARY_SUBMISSION_ID="$(plutil -extract id raw -o - "${NOTARY_OUTPUT_JSON}" 2>/dev/null || true)"
+if [[ "${NOTARY_STATUS}" != "Accepted" ]]; then
+  echo "error: notarization status is '${NOTARY_STATUS:-unknown}'"
+  if [[ -n "${NOTARY_SUBMISSION_ID}" ]]; then
+    echo "==> Notarization log (${NOTARY_SUBMISSION_ID})"
+    xcrun notarytool log "${NOTARY_SUBMISSION_ID}" --keychain-profile "${NOTARYTOOL_PROFILE}" || true
+  fi
+  exit 1
+fi
 
 echo "==> Staple notarization ticket"
 xcrun stapler staple "${APP_BUNDLE}"
