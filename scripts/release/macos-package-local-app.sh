@@ -9,6 +9,7 @@ BINARY_NAME="${BINARY_NAME:-SynticApp}"
 BUNDLE_ID="${BUNDLE_ID:-com.syntic.app.local}"
 VERSION="${VERSION:-0.1.0-local}"
 BUILD_NUMBER="${BUILD_NUMBER:-1}"
+CODESIGN_IDENTITY="${CODESIGN_IDENTITY:-}"
 
 INFO_PLIST_TEMPLATE="${REPO_ROOT}/apps/macos/Packaging/Info.plist"
 DIST_DIR="${REPO_ROOT}/dist/macos-local"
@@ -37,6 +38,24 @@ require_file "${INFO_PLIST_TEMPLATE}"
 require_cmd swift
 require_cmd cargo
 require_cmd codesign
+require_cmd security
+
+/bin/echo "==> Resolve code signing identity"
+SELECTED_IDENTITY="${CODESIGN_IDENTITY}"
+if [[ -z "${SELECTED_IDENTITY}" ]]; then
+  SELECTED_IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null | sed -n 's/.*"\(Apple Development:[^"]*\)"/\1/p' | head -n 1 || true)"
+fi
+
+if [[ -z "${SELECTED_IDENTITY}" ]]; then
+  SELECTED_IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null | sed -n 's/.*"\(Developer ID Application:[^"]*\)"/\1/p' | head -n 1 || true)"
+fi
+
+if [[ -n "${SELECTED_IDENTITY}" ]]; then
+  echo "Using signing identity: ${SELECTED_IDENTITY}"
+else
+  echo "warning: no stable signing identity found; falling back to ad-hoc signing."
+  echo "warning: Accessibility/Input permissions may reset after rebuilds when using ad-hoc signing."
+fi
 
 echo "==> Build Rust FFI (debug)"
 "${REPO_ROOT}/scripts/build-ffi.sh"
@@ -62,8 +81,13 @@ cp "${INFO_PLIST_TEMPLATE}" "${APP_PLIST}"
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString ${VERSION}" "${APP_PLIST}"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${BUILD_NUMBER}" "${APP_PLIST}"
 
-echo "==> Ad-hoc sign local app bundle"
-codesign --force --deep --sign - "${APP_BUNDLE}"
+if [[ -n "${SELECTED_IDENTITY}" ]]; then
+  echo "==> Sign local app bundle with stable identity"
+  codesign --force --deep --sign "${SELECTED_IDENTITY}" "${APP_BUNDLE}"
+else
+  echo "==> Ad-hoc sign local app bundle"
+  codesign --force --deep --sign - "${APP_BUNDLE}"
+fi
 
 echo "done: ${APP_BUNDLE}"
 echo "hint: open \"${APP_BUNDLE}\""

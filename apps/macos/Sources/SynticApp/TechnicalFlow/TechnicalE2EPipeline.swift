@@ -1,4 +1,5 @@
 import AppKit
+import ApplicationServices
 import Foundation
 
 @MainActor
@@ -10,6 +11,7 @@ final class TechnicalE2EPipeline: ObservableObject {
     @Published private(set) var hotkeySignalMessage = "Noch kein Hotkey erkannt."
     @Published private(set) var hotkeySignalKind = "idle"
     @Published private(set) var hotkeyDebugStatus = "idle"
+    @Published private(set) var accessibilityPermissionStatus = "unknown"
     @Published private(set) var latestAudioLevel: Float = 0
     @Published private(set) var latestRouteJSON = "{}"
     @Published private(set) var latestTranscript = ""
@@ -88,6 +90,7 @@ final class TechnicalE2EPipeline: ObservableObject {
         self.coreFeedProjector = coreFeedProjector
 
         hotkeyDefinition = hotkeyAdapter.supportedHotkeysDescription
+        refreshAccessibilityPermissionStatus(promptUser: false)
         dictationStateJSON = coreBridge.dictationStateJSON()
         telemetryLogPath = telemetryLogger.logFilePath
         coreFeedProjectionPath = coreFeedProjector.logFilePath
@@ -149,6 +152,33 @@ final class TechnicalE2EPipeline: ObservableObject {
         startHotkeyListenerIfNeeded(startSource: "manual_toggle")
     }
 
+    func requestAccessibilityPermission() {
+        refreshAccessibilityPermissionStatus(promptUser: true)
+        updateHotkeyDebug("accessibility_prompt_requested status=\(accessibilityPermissionStatus)")
+    }
+
+    func openAccessibilitySettings() {
+        guard
+            let settingsURL = URL(
+                string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
+            )
+        else {
+            return
+        }
+        NSWorkspace.shared.open(settingsURL)
+    }
+
+    func openInputMonitoringSettings() {
+        guard
+            let settingsURL = URL(
+                string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent"
+            )
+        else {
+            return
+        }
+        NSWorkspace.shared.open(settingsURL)
+    }
+
     private func startHotkeyListenerIfNeeded(startSource: String) {
         guard !isHotkeyListening else {
             return
@@ -161,6 +191,7 @@ final class TechnicalE2EPipeline: ObservableObject {
         }
 
         isHotkeyListening = startResult.started
+        refreshAccessibilityPermissionStatus(promptUser: false)
         hotkeyStatusSummary = startResult.statusSummary
         let listenerStatus = startResult.hasGlobalMonitor ? "ok" : "degraded"
         emitTelemetry(
@@ -419,6 +450,10 @@ final class TechnicalE2EPipeline: ObservableObject {
             status: "ok",
             context: ["trigger_source": triggerSource]
         )
+        refreshAccessibilityPermissionStatus(promptUser: false)
+        if accessibilityPermissionStatus != "granted" {
+            updateHotkeyDebug("accessibility_missing: direct injection likely blocked")
+        }
         updateHotkeyDebug("start_requested trigger=\(triggerSource)")
         isStartingCapture = true
 
@@ -1420,6 +1455,16 @@ final class TechnicalE2EPipeline: ObservableObject {
 
     private func updateHotkeyDebug(_ message: String) {
         hotkeyDebugStatus = "\(Self.timestampFormatter.string(from: Date())) \(message)"
+    }
+
+    private func refreshAccessibilityPermissionStatus(promptUser: Bool) {
+        if promptUser {
+            let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
+            let granted = AXIsProcessTrustedWithOptions(options)
+            accessibilityPermissionStatus = granted ? "granted" : "missing"
+            return
+        }
+        accessibilityPermissionStatus = AXIsProcessTrusted() ? "granted" : "missing"
     }
 
     private static func signalTimestampString() -> String {

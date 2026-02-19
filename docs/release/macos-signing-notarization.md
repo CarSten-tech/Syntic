@@ -14,7 +14,26 @@ cd /Users/carstenrheidt/Syntic
 open dist/macos-local/SynticLocal.app
 ```
 
-Dieser Pfad ist nur für lokale Nutzung/Tests gedacht (ad-hoc signiert, nicht notarisiert).
+Der Local-Runner nutzt wenn verfügbar automatisch eine stabile lokale Signatur
+(`Apple Development` oder `Developer ID Application`). Nur wenn keine Identity vorhanden ist,
+fällt er auf ad-hoc zurück.
+
+Hinweis:
+- ad-hoc kann dazu führen, dass Accessibility/Input-Rechte nach Rebuilds nicht stabil erhalten bleiben.
+- für reproduzierbare lokale E2E-Tests besser mit stabiler Identity signieren:
+
+```bash
+cd /Users/carstenrheidt/Syntic
+CODESIGN_IDENTITY="Apple Development: YOUR NAME (TEAMID)" \
+./scripts/release/macos-package-local-app.sh
+```
+
+Wenn TCC-Rechte trotzdem hängen, Reparatur-Script nutzen:
+
+```bash
+cd /Users/carstenrheidt/Syntic
+./scripts/release/macos-local-permission-repair.sh
+```
 
 ## CI/Automation (GitHub Actions)
 

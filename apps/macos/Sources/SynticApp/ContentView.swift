@@ -155,6 +155,21 @@ struct ContentView: View {
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .lineLimit(2)
+            Text("Accessibility: \(technicalE2EPipeline.accessibilityPermissionStatus)")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+
+            HStack {
+                Button("Zugriff anfordern") {
+                    technicalE2EPipeline.requestAccessibilityPermission()
+                }
+                Button("Accessibility öffnen") {
+                    technicalE2EPipeline.openAccessibilitySettings()
+                }
+                Button("Input Monitoring öffnen") {
+                    technicalE2EPipeline.openInputMonitoringSettings()
+                }
+            }
 
             HStack {
                 Toggle("Network verfügbar", isOn: $technicalE2EPipeline.networkAvailable)
