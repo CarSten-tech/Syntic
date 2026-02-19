@@ -472,6 +472,23 @@ final class TechnicalE2EPipeline: ObservableObject {
         switch result {
         case let .failure(error):
             let sttFailureCode = reportStructuredSTTFailure(error)
+            if sttFailureCode == "no_speech_detected" {
+                _ = coreBridge.dictationReset()
+                latestTranscript = ""
+                setPhase("idle", trigger: "transcription_empty", status: "degraded")
+                refreshDictationState()
+                emitTelemetry(
+                    category: "stt",
+                    action: "transcription_empty",
+                    status: "degraded",
+                    context: [
+                        "provider": activeRouteProvider,
+                        "error_code": sttFailureCode,
+                    ]
+                )
+                appendLog("No speech detected by STT provider \(activeRouteProvider); returned to idle.")
+                return
+            }
             emitTelemetry(
                 category: "stt",
                 action: "transcription_failed",
@@ -575,6 +592,14 @@ final class TechnicalE2EPipeline: ObservableObject {
             return "recognizer_unavailable"
 
         case let .recognitionFailed(detail):
+            if detail.lowercased().contains("no speech detected") {
+                reportCoreErrorEvent(
+                    source: source,
+                    code: "no_speech_detected",
+                    message: detail
+                )
+                return "no_speech_detected"
+            }
             reportCoreErrorEvent(
                 source: source,
                 code: "recognition_failed",

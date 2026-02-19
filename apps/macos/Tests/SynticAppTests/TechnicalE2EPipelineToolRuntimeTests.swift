@@ -114,6 +114,23 @@ final class TechnicalE2EPipelineToolRuntimeTests: XCTestCase {
         XCTAssertNotEqual(fixture.pipeline.phase, "failed")
     }
 
+    func testNoSpeechDetectedReturnsToIdleWithoutFailurePhase() async {
+        let fixture = makeFixture(
+            transcript: "ignored",
+            localSttAdapter: ImmediateFailureSTTAdapter(error: STTAdapterError.noSpeechDetected)
+        )
+        defer { fixture.cleanup() }
+
+        fixture.pipeline.triggerHotkeyAction()
+        let reachedListening = await waitUntil(timeoutMs: 2_500) { fixture.pipeline.phase == "listening" }
+        XCTAssertTrue(reachedListening)
+
+        fixture.pipeline.triggerHotkeyAction()
+        let reachedIdle = await waitUntil(timeoutMs: 4_000) { fixture.pipeline.phase == "idle" }
+        XCTAssertTrue(reachedIdle)
+        XCTAssertNotEqual(fixture.pipeline.phase, "failed")
+    }
+
     private func makeFixture(
         transcript: String,
         localSttAdapter: STTTranscribing? = nil,
