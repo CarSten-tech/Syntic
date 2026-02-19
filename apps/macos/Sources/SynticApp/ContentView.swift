@@ -6,6 +6,7 @@ struct ContentView: View {
 
     let coreBridge: SynticCoreVersionProviding
     @ObservedObject var settingsController: AppSettingsController
+    @ObservedObject var sessionHistoryController: SessionHistoryController
     @StateObject private var technicalE2EPipeline: TechnicalE2EPipeline
     private let finderContextAdapter = MacOSFinderContextAdapter()
 
@@ -17,11 +18,20 @@ struct ContentView: View {
     @State private var commandSafetyPayload = ""
     @State private var finderSnapshotSummary = "-"
 
-    init(coreBridge: SynticCoreVersionProviding, settingsController: AppSettingsController) {
+    init(
+        coreBridge: SynticCoreVersionProviding,
+        settingsController: AppSettingsController,
+        sessionHistoryController: SessionHistoryController
+    ) {
         self.coreBridge = coreBridge
         self.settingsController = settingsController
+        self.sessionHistoryController = sessionHistoryController
         _technicalE2EPipeline = StateObject(
-            wrappedValue: TechnicalE2EPipeline(coreBridge: coreBridge, settingsController: settingsController)
+            wrappedValue: TechnicalE2EPipeline(
+                coreBridge: coreBridge,
+                settingsController: settingsController,
+                sessionHistoryController: sessionHistoryController
+            )
         )
     }
 
@@ -166,6 +176,11 @@ struct ContentView: View {
                 }
                 .disabled(!technicalE2EPipeline.reviewActionsEnabled)
 
+                Button("Undo Last Confirmed") {
+                    technicalE2EPipeline.undoLastConfirmedForReview()
+                }
+                .disabled(!technicalE2EPipeline.hasUndoCandidate)
+
                 Button("Finder Snapshot") {
                     refreshFinderSnapshotSummary()
                 }
@@ -196,6 +211,14 @@ struct ContentView: View {
                 .foregroundStyle(.secondary)
                 .lineLimit(4)
             Text("Telemetry log: \(technicalE2EPipeline.telemetryLogPath)")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+            Text("Session history: count=\(sessionHistoryController.records.count), latest=\(sessionHistoryController.latestRecordSummary)")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+            Text("Session history file: \(technicalE2EPipeline.sessionHistoryPath)")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .lineLimit(2)

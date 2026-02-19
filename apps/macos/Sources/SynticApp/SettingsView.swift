@@ -3,6 +3,7 @@ import SwiftUI
 struct SettingsView: View {
     let coreBridge: SynticCoreVersionProviding
     @ObservedObject var settingsController: AppSettingsController
+    @ObservedObject var sessionHistoryController: SessionHistoryController
 
     var body: some View {
         Form {
@@ -42,6 +43,40 @@ struct SettingsView: View {
 
                     Button("Defaults wiederherstellen") {
                         settingsController.resetToDefaults()
+                    }
+                }
+            }
+
+            Section("Session History") {
+                LabeledContent("Datei") {
+                    Text(sessionHistoryController.historyFilePath)
+                        .font(.caption2)
+                        .lineLimit(2)
+                }
+
+                LabeledContent("Status") {
+                    Text(sessionHistoryController.persistenceSummary)
+                        .font(.caption)
+                        .lineLimit(2)
+                }
+
+                LabeledContent("Einträge") {
+                    Text("\(sessionHistoryController.records.count)")
+                }
+
+                LabeledContent("Letzter Eintrag") {
+                    Text(sessionHistoryController.latestRecordSummary)
+                        .font(.caption2)
+                        .lineLimit(2)
+                }
+
+                HStack {
+                    Button("History neu laden") {
+                        sessionHistoryController.reloadFromDisk()
+                    }
+
+                    Button("History leeren") {
+                        sessionHistoryController.clearHistory()
                     }
                 }
             }

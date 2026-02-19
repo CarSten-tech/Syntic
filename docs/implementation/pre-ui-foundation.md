@@ -39,6 +39,10 @@ Abgrenzen, welche Kernbausteine vor der ersten echten Produkt-UI/UX technisch st
   - `routingMode` (`auto/local/cloud`)
   - `sensitiveModeEnabled`
   - Schema-Version + Corrupt-Recovery mit Backup-Datei
+- Persistenz für Session-Daten (History/Undo-Basis):
+  - Session-History in `Application Support/Syntic/session-history.json`
+  - Schema-Version + Corrupt-Recovery mit Backup-Datei
+  - Undo-Basis: letzter bestätigter Transcript kann in Review-Zustand zurückgeführt werden
 - Core-Event-Routing (Error + Permission):
   - In-memory Event-Journal im Core (Ring-Buffer)
   - FFI-Endpunkte für Event-Report und Event-Feed
@@ -68,6 +72,6 @@ Abgrenzen, welche Kernbausteine vor der ersten echten Produkt-UI/UX technisch st
 ## Nächster technischer Fokus
 
 1. Entitlements/Signing operativ abschließen (Credentials + erster grüner Notarization-Lauf).
-2. Persistenz für Session-Daten (History/Undo) mit Migrationspfad einführen.
-3. Review Cancel als Domain-Event-Kette bis Tool Runtime verdrahten.
-4. Event-Feed konsumierend in Produkt-UI statt Debug-Textprojektion.
+2. Review Cancel als Domain-Event-Kette bis Tool Runtime verdrahten.
+3. Event-Feed konsumierend in Produkt-UI statt Debug-Textprojektion.
+4. Session-History in Core/FFI spiegeln (statt nur Shell-Persistenz) für plattformübergreifende Konsistenz.

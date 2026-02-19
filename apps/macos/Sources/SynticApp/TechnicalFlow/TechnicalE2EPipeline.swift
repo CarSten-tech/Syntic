@@ -18,6 +18,7 @@ final class TechnicalE2EPipeline: ObservableObject {
 
     private let coreBridge: SynticCoreVersionProviding
     private let settingsController: AppSettingsController
+    private let sessionHistoryController: SessionHistoryController
     private let audioAdapter: AudioCapturing
     private let hotkeyAdapter: HotkeyListening
     private let localSttAdapter: STTTranscribing
@@ -26,10 +27,13 @@ final class TechnicalE2EPipeline: ObservableObject {
     private let telemetryLogger: StructuredTelemetryLogging
 
     private var isTranscribing = false
+    private var activeSessionStartedAtMs: UInt64?
+    private var activeRouteProvider = "unknown"
 
     init(
         coreBridge: SynticCoreVersionProviding,
         settingsController: AppSettingsController,
+        sessionHistoryController: SessionHistoryController,
         audioAdapter: AudioCapturing = MacOSAudioCaptureAdapter(),
         hotkeyAdapter: HotkeyListening = MacOSGlobalHotkeyAdapter(),
         localSttAdapter: STTTranscribing = LocalStubSTTAdapter(),
@@ -39,6 +43,7 @@ final class TechnicalE2EPipeline: ObservableObject {
     ) {
         self.coreBridge = coreBridge
         self.settingsController = settingsController
+        self.sessionHistoryController = sessionHistoryController
         self.audioAdapter = audioAdapter
         self.hotkeyAdapter = hotkeyAdapter
         self.localSttAdapter = localSttAdapter
@@ -74,6 +79,14 @@ final class TechnicalE2EPipeline: ObservableObject {
 
     var recentLogText: String {
         logs.suffix(10).joined(separator: "\n")
+    }
+
+    var hasUndoCandidate: Bool {
+        sessionHistoryController.hasUndoCandidate
+    }
+
+    var sessionHistoryPath: String {
+        sessionHistoryController.historyFilePath
     }
 
     func toggleHotkeyListener() {
@@ -149,6 +162,13 @@ final class TechnicalE2EPipeline: ObservableObject {
             return
         }
 
+        persistSessionRecord(
+            outcome: .confirmed,
+            transcript: confirmedTranscript,
+            errorCode: nil,
+            injectionDisposition: mapInjectionDisposition(injectionResult.disposition)
+        )
+
         _ = coreBridge.dictationReset()
         setPhase("idle", trigger: "confirm_review_completed")
         refreshDictationState()
@@ -170,11 +190,51 @@ final class TechnicalE2EPipeline: ObservableObject {
             return
         }
 
+        persistSessionRecord(
+            outcome: .cancelled,
+            transcript: latestTranscript,
+            errorCode: nil,
+            injectionDisposition: nil
+        )
+
         _ = coreBridge.dictationReset()
         setPhase("idle", trigger: "cancel_review_completed")
         refreshDictationState()
         emitTelemetry(category: "review", action: "cancelled", status: "ok", context: [:])
         appendLog("Review canceled and state reset.")
+    }
+
+    func undoLastConfirmedForReview() {
+        guard let restoredRecord = sessionHistoryController.markLastConfirmedAsUndone() else {
+            appendLog("Undo skipped: no confirmed session available.")
+            emitTelemetry(category: "undo", action: "restore_requested", status: "degraded", context: ["reason": "no_candidate"])
+            return
+        }
+
+        _ = coreBridge.dictationReset()
+        let startStatus = coreBridge.dictationStart()
+        let reviewStatus = coreBridge.dictationFinalizeReview(restoredRecord.transcript)
+        guard startStatus == 0, reviewStatus == 0 else {
+            fail("undo_restore_failed_start=\(startStatus)_review=\(reviewStatus)")
+            return
+        }
+
+        latestTranscript = restoredRecord.transcript
+        activeSessionStartedAtMs = Self.nowMs()
+        activeRouteProvider = restoredRecord.routeProvider
+        setPhase("reviewing", trigger: "undo_last_confirmed")
+        refreshDictationState()
+        emitTelemetry(
+            category: "undo",
+            action: "restore_last_confirmed",
+            status: "ok",
+            context: [
+                "restored_session_id": restoredRecord.id,
+                "restored_provider": restoredRecord.routeProvider,
+                "transcript_length": "\(restoredRecord.transcript.count)",
+            ]
+        )
+        appendLog("Undo restored confirmed transcript into review state.")
     }
 
     private func handleHotkeyTrigger(source: String) {
@@ -205,6 +265,8 @@ final class TechnicalE2EPipeline: ObservableObject {
         }
 
         latestInjectionSummary = "-"
+        activeSessionStartedAtMs = Self.nowMs()
+        activeRouteProvider = "unknown"
         emitTelemetry(
             category: "dictation",
             action: "start_requested",
@@ -285,6 +347,7 @@ final class TechnicalE2EPipeline: ObservableObject {
 
         let selectedProvider = parseProviderIdentifier(from: latestRouteJSON)
         let selectedAdapter = selectedProvider == cloudSttAdapter.providerIdentifier ? cloudSttAdapter : localSttAdapter
+        activeRouteProvider = selectedAdapter.providerIdentifier
 
         emitTelemetry(
             category: "stt_routing",
@@ -356,6 +419,12 @@ final class TechnicalE2EPipeline: ObservableObject {
 
     private func fail(_ reason: String) {
         _ = coreBridge.dictationFail(reason)
+        persistSessionRecord(
+            outcome: .failed,
+            transcript: latestTranscript,
+            errorCode: reason,
+            injectionDisposition: nil
+        )
         reportCoreErrorEvent(
             source: "macos.technical_e2e",
             code: reason,
@@ -501,9 +570,55 @@ final class TechnicalE2EPipeline: ObservableObject {
         return value
     }
 
+    private func persistSessionRecord(
+        outcome: SessionOutcome,
+        transcript: String,
+        errorCode: String?,
+        injectionDisposition: SessionInjectionDisposition?
+    ) {
+        sessionHistoryController.record(
+            outcome: outcome,
+            transcript: transcript,
+            locale: settingsController.locale.rawValue,
+            routeProvider: activeRouteProvider,
+            durationMs: currentSessionDurationMs(),
+            errorCode: errorCode,
+            injectionDisposition: injectionDisposition
+        )
+        activeSessionStartedAtMs = nil
+        activeRouteProvider = "unknown"
+    }
+
+    private func currentSessionDurationMs() -> UInt32? {
+        guard let startedAt = activeSessionStartedAtMs else {
+            return nil
+        }
+        let now = Self.nowMs()
+        if now <= startedAt {
+            return 0
+        }
+        let delta = now - startedAt
+        return delta > UInt64(UInt32.max) ? UInt32.max : UInt32(delta)
+    }
+
+    private func mapInjectionDisposition(_ disposition: TextInjectionDisposition) -> SessionInjectionDisposition {
+        switch disposition {
+        case .injected:
+            return .injected
+        case .clipboardFallback:
+            return .clipboardFallback
+        case .failed:
+            return .failed
+        }
+    }
+
     private static let timestampFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateFormat = "HH:mm:ss"
         return formatter
     }()
+
+    private static func nowMs() -> UInt64 {
+        UInt64(Date().timeIntervalSince1970 * 1_000)
+    }
 }
