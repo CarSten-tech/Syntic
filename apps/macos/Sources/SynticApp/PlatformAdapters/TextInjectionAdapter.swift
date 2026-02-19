@@ -38,6 +38,11 @@ struct MacOSTextInjectionAdapter: TextInjecting {
         "com.figma.Desktop",
         "com.1password.1password"
     ]
+    private let forceClipboardFallback: Bool
+
+    init(forceClipboardFallback: Bool = ProcessInfo.processInfo.environment["SYNTIC_FORCE_CLIPBOARD_FALLBACK"] == "1") {
+        self.forceClipboardFallback = forceClipboardFallback
+    }
 
     func inject(
         text: String,
@@ -51,6 +56,10 @@ struct MacOSTextInjectionAdapter: TextInjecting {
                 method: .accessibility,
                 detail: "Kein Text zum Injizieren vorhanden."
             )
+        }
+
+        if forceClipboardFallback {
+            return putTextOnClipboard(trimmedText, detail: "Clipboard-Fallback via SYNTIC_FORCE_CLIPBOARD_FALLBACK=1 erzwungen.")
         }
 
         if shouldForceClipboard(bundleIdentifier: bundleIdentifier) {

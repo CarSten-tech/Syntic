@@ -54,9 +54,13 @@ Abgrenzen, welche Kernbausteine vor der ersten echten Produkt-UI/UX technisch st
 - E2E-Telemetrie als strukturierte Events/Logs:
   - Core-Telemetry-Events (`category/action/status/context/value_ms`)
   - NDJSON-Log unter `Application Support/Syntic/logs/e2e-telemetry.ndjson`
+  - Injection unterscheidet jetzt `ok` vs. `fallback` vs. `failed`
 - Core-Feed-Projektion als Persistenzgrundlage:
   - inkrementeller Konsum von `core_events`, `domain_events`, `tool_runtime_signals`, `session_history`
   - NDJSON-Projektion unter `Application Support/Syntic/logs/core-feed-projection.ndjson`
+- Manueller E2E-Smoke-Block (Spike 05):
+  - Check-Skript fuer `direct_injection`, `clipboard_fallback`, `stt_permission_denied`
+  - reproduzierbarer Clipboard-Fallback via `SYNTIC_FORCE_CLIPBOARD_FALLBACK=1`
 - Domain-Event-Ketten bis Tool Runtime:
   - `review_cancel` -> Abort-Queue/Task-Cancellation
   - `review_confirm` -> Commit/Execution-Start der Pending Tool-Invocations

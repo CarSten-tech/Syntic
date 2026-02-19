@@ -51,6 +51,48 @@ cd /Users/carstenrheidt/Syntic
 Der Runner beendet mit Exit-Code `1`, wenn ein kritischer Check fehlschlägt.
 Für CI/Release-Gates kann `REQUIRE_NOTARY_AUTH=1` gesetzt werden.
 
+## Operativer Credentials-Setup (lokal)
+
+### 1. Developer ID Identity pruefen
+
+```bash
+security find-identity -v -p codesigning | grep "Developer ID Application:" || true
+```
+
+Wenn hier keine Zeile erscheint, ist Signierung fuer Distribution noch blockiert.
+
+### 2. Notary Auth-Modus waehlen
+
+Option A (`NOTARYTOOL_PROFILE`, empfohlen fuer lokale Nutzung):
+
+```bash
+xcrun notarytool store-credentials "syntic-notary" \
+  --apple-id "your-apple-id@example.com" \
+  --team-id "TEAMID1234" \
+  --password "app-specific-password"
+```
+
+Option B (API-Key, empfohlen fuer CI):
+
+```bash
+export NOTARY_AUTH_MODE="api_key"
+export NOTARY_API_KEY_PATH="/abs/path/AuthKey_ABC123DEFG.p8"
+export NOTARY_API_KEY_ID="ABC123DEFG"
+export NOTARY_ISSUER_ID="00000000-0000-0000-0000-000000000000"
+```
+
+### 3. Preflight mit harter Notary-Anforderung
+
+```bash
+cd /Users/carstenrheidt/Syntic
+REQUIRE_NOTARY_AUTH=1 \
+NOTARY_AUTH_MODE=profile \
+NOTARYTOOL_PROFILE=syntic-notary \
+./scripts/spikes/spike-04-notarization-preflight.sh
+```
+
+Wenn der Preflight hier `summary|result|pass` liefert, sind die lokalen Credentials technisch bereit.
+
 ## Build + Sign + Notarize
 
 ```bash

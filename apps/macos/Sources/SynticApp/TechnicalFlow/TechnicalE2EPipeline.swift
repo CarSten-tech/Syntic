@@ -167,10 +167,19 @@ final class TechnicalE2EPipeline: ObservableObject {
         latestInjectionSummary =
             "disposition=\(describe(injectionResult.disposition)), method=\(injectionResult.method.rawValue), bundle=\(frontmostBundleIdentifier ?? "unknown")"
         appendLog("Injection result: \(latestInjectionSummary). \(injectionResult.detail)")
+        let injectionTelemetryStatus: String
+        switch injectionResult.disposition {
+        case .injected:
+            injectionTelemetryStatus = "ok"
+        case .clipboardFallback:
+            injectionTelemetryStatus = "fallback"
+        case .failed:
+            injectionTelemetryStatus = "failed"
+        }
         emitTelemetry(
             category: "injection",
             action: "result",
-            status: injectionResult.disposition == .failed ? "failed" : "ok",
+            status: injectionTelemetryStatus,
             context: [
                 "disposition": describe(injectionResult.disposition),
                 "method": injectionResult.method.rawValue,
