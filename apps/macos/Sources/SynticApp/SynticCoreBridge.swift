@@ -17,6 +17,9 @@ protocol SynticCoreVersionProviding {
     func commandSafetyJSON(_ utterance: String) -> String
     func coreEventsSinceJSON(lastSeenEventID: UInt64, limit: UInt16) -> String
     func coreEventsClear() -> UInt8
+    func domainEventsSinceJSON(lastSeenEventID: UInt64, limit: UInt16) -> String
+    func toolRuntimeSignalsSinceJSON(lastSeenSignalID: UInt64, limit: UInt16) -> String
+    func domainEventsClear() -> UInt8
     func reportCoreErrorEvent(source: String, code: String, message: String) -> UInt8
     func reportCorePermissionEvent(
         source: String,
@@ -124,6 +127,22 @@ struct SynticCoreBridge: SynticCoreVersionProviding {
 
     func coreEventsClear() -> UInt8 {
         syntic_core_events_clear()
+    }
+
+    func domainEventsSinceJSON(lastSeenEventID: UInt64, limit: UInt16) -> String {
+        readHeapJsonPayload(fallback: "{\"events\":[]}") {
+            syntic_domain_events_since_json(lastSeenEventID, limit)
+        }
+    }
+
+    func toolRuntimeSignalsSinceJSON(lastSeenSignalID: UInt64, limit: UInt16) -> String {
+        readHeapJsonPayload(fallback: "{\"signals\":[]}") {
+            syntic_tool_runtime_signals_since_json(lastSeenSignalID, limit)
+        }
+    }
+
+    func domainEventsClear() -> UInt8 {
+        syntic_domain_events_clear()
     }
 
     func reportCoreErrorEvent(source: String, code: String, message: String) -> UInt8 {

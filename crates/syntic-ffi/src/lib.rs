@@ -7,7 +7,8 @@ use std::sync::{Mutex, OnceLock};
 
 use syntic_core::CoreRuntime;
 use syntic_core::command::{evaluate_safety, fallback_classify};
-use syntic_core::dictation::DictationTransitionError;
+use syntic_core::dictation::{DictationPhase, DictationTransitionError};
+use syntic_core::domain::{DomainEvent, DomainEventPayload, ToolRuntimeSignal};
 use syntic_core::events::{CoreEvent, CoreEventPayload};
 use syntic_core::stt::{SttPreferenceMode, SttRoutingInput, select_provider};
 
@@ -234,6 +235,53 @@ fn core_events_payload_json(events: &[CoreEvent]) -> String {
         .collect::<Vec<_>>()
         .join(",");
     format!("{{\"events\":[{serialized_events}]}}")
+}
+
+fn domain_event_json(event: &DomainEvent) -> String {
+    match &event.payload {
+        DomainEventPayload::DictationReviewCancelled {
+            source,
+            phase_before,
+            review_transcript_length,
+        } => format!(
+            "{{\"id\":{},\"timestamp_ms\":{},\"name\":\"{}\",\"source\":\"{}\",\"phase_before\":\"{}\",\"review_transcript_length\":{}}}",
+            event.id,
+            event.timestamp_ms,
+            event.name.as_str(),
+            json_escape(source),
+            json_escape(phase_before),
+            review_transcript_length
+        ),
+    }
+}
+
+fn domain_events_payload_json(events: &[DomainEvent]) -> String {
+    let serialized_events = events
+        .iter()
+        .map(domain_event_json)
+        .collect::<Vec<_>>()
+        .join(",");
+    format!("{{\"events\":[{serialized_events}]}}")
+}
+
+fn tool_runtime_signal_json(signal: &ToolRuntimeSignal) -> String {
+    format!(
+        "{{\"id\":{},\"timestamp_ms\":{},\"action\":\"{}\",\"reason\":\"{}\",\"origin_domain_event_id\":{}}}",
+        signal.id,
+        signal.timestamp_ms,
+        signal.action.as_str(),
+        json_escape(&signal.reason),
+        signal.origin_domain_event_id
+    )
+}
+
+fn tool_runtime_signals_payload_json(signals: &[ToolRuntimeSignal]) -> String {
+    let serialized_signals = signals
+        .iter()
+        .map(tool_runtime_signal_json)
+        .collect::<Vec<_>>()
+        .join(",");
+    format!("{{\"signals\":[{serialized_signals}]}}")
 }
 
 /// Returns a pointer to a static NUL-terminated UTF-8 version string.
@@ -489,6 +537,60 @@ pub extern "C" fn syntic_core_events_clear() -> u8 {
     FfiStatusCode::Success as u8
 }
 
+/// Returns a heap-allocated JSON string with domain events after the given ID.
+///
+/// The caller owns the returned pointer and must release it using
+/// `syntic_string_free`.
+#[unsafe(no_mangle)]
+pub extern "C" fn syntic_domain_events_since_json(
+    last_seen_event_id: u64,
+    limit: u16,
+) -> *mut c_char {
+    let payload = with_runtime(|runtime| {
+        let events = runtime.domain_events_since(last_seen_event_id, normalized_event_limit(limit));
+        domain_events_payload_json(&events)
+    });
+
+    match payload {
+        Ok(json) => to_heap_c_string(json),
+        Err(_) => ptr::null_mut(),
+    }
+}
+
+/// Returns a heap-allocated JSON string with tool-runtime signals after the given ID.
+///
+/// The caller owns the returned pointer and must release it using
+/// `syntic_string_free`.
+#[unsafe(no_mangle)]
+pub extern "C" fn syntic_tool_runtime_signals_since_json(
+    last_seen_signal_id: u64,
+    limit: u16,
+) -> *mut c_char {
+    let payload = with_runtime(|runtime| {
+        let signals =
+            runtime.tool_runtime_signals_since(last_seen_signal_id, normalized_event_limit(limit));
+        tool_runtime_signals_payload_json(&signals)
+    });
+
+    match payload {
+        Ok(json) => to_heap_c_string(json),
+        Err(_) => ptr::null_mut(),
+    }
+}
+
+/// Clears in-memory domain events and tool-runtime signals.
+///
+/// Returns a numeric FFI status code.
+#[unsafe(no_mangle)]
+pub extern "C" fn syntic_domain_events_clear() -> u8 {
+    let Ok(mut runtime) = runtime_mutex().lock() else {
+        return FfiStatusCode::Internal as u8;
+    };
+
+    runtime.clear_domain_events();
+    FfiStatusCode::Success as u8
+}
+
 /// Resets dictation state to `idle`.
 ///
 /// Returns a numeric FFI status code.
@@ -575,9 +677,38 @@ pub extern "C" fn syntic_dictation_confirm() -> u8 {
 /// Returns a numeric FFI status code.
 #[unsafe(no_mangle)]
 pub extern "C" fn syntic_dictation_cancel() -> u8 {
-    with_runtime_mut("syntic_dictation_cancel", |runtime| {
-        runtime.dictation_session_mut().cancel()
-    }) as u8
+    let Ok(mut runtime) = runtime_mutex().lock() else {
+        return FfiStatusCode::Internal as u8;
+    };
+
+    let snapshot = runtime.dictation_session().snapshot();
+    let phase_before = snapshot.phase;
+    let review_transcript_length = snapshot.review_transcript.chars().count();
+    let review_transcript_length = u32::try_from(review_transcript_length).unwrap_or(u32::MAX);
+
+    match runtime.dictation_session_mut().cancel() {
+        Ok(()) => {
+            if phase_before == DictationPhase::Reviewing {
+                runtime.record_dictation_review_cancelled_domain_event(
+                    "ffi.dictation",
+                    phase_before.as_str(),
+                    review_transcript_length,
+                );
+            }
+            FfiStatusCode::Success as u8
+        }
+        Err(error) => {
+            runtime.record_error_event(
+                "ffi.dictation",
+                error.as_str(),
+                &format!(
+                    "Dictation transition failed in `syntic_dictation_cancel`: {}",
+                    error.as_str()
+                ),
+            );
+            map_transition_error(error) as u8
+        }
+    }
 }
 
 /// Moves dictation state to `failed` and sets an error message.
@@ -629,19 +760,30 @@ pub unsafe extern "C" fn syntic_string_free(pointer: *mut c_char) {
 mod tests {
     use std::ffi::{CStr, CString};
     use std::ptr;
+    use std::sync::{Mutex, MutexGuard, OnceLock};
 
     use super::{
         syntic_command_classify_json, syntic_command_safety_json, syntic_core_event_report_error,
         syntic_core_event_report_permission, syntic_core_event_report_telemetry,
         syntic_core_events_clear, syntic_core_events_since_json, syntic_core_version,
-        syntic_dictation_append_partial, syntic_dictation_confirm,
+        syntic_dictation_append_partial, syntic_dictation_cancel, syntic_dictation_confirm,
         syntic_dictation_finalize_review, syntic_dictation_reset, syntic_dictation_start,
-        syntic_dictation_state_json, syntic_runtime_health_json, syntic_string_free,
-        syntic_stt_route_json,
+        syntic_dictation_state_json, syntic_domain_events_clear, syntic_domain_events_since_json,
+        syntic_runtime_health_json, syntic_string_free, syntic_stt_route_json,
+        syntic_tool_runtime_signals_since_json,
     };
+
+    fn test_guard() -> MutexGuard<'static, ()> {
+        static TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        TEST_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("ffi test lock poisoned")
+    }
 
     #[test]
     fn core_version_pointer_is_valid_utf8() {
+        let _guard = test_guard();
         let version_pointer = syntic_core_version();
         assert!(!version_pointer.is_null());
 
@@ -652,6 +794,7 @@ mod tests {
 
     #[test]
     fn health_json_can_be_freed() {
+        let _guard = test_guard();
         let payload_pointer = syntic_runtime_health_json();
         assert!(!payload_pointer.is_null());
 
@@ -666,6 +809,7 @@ mod tests {
 
     #[test]
     fn dictation_happy_path_transitions_to_confirmed() {
+        let _guard = test_guard();
         assert_eq!(syntic_dictation_reset(), 0);
         assert_eq!(syntic_dictation_start(), 0);
 
@@ -690,13 +834,51 @@ mod tests {
 
     #[test]
     fn dictation_start_twice_returns_transition_error_status() {
+        let _guard = test_guard();
         assert_eq!(syntic_dictation_reset(), 0);
         assert_eq!(syntic_dictation_start(), 0);
         assert_eq!(syntic_dictation_start(), 10);
     }
 
     #[test]
+    fn review_cancel_emits_domain_event_and_tool_runtime_signal() {
+        let _guard = test_guard();
+        assert_eq!(syntic_dictation_reset(), 0);
+        assert_eq!(syntic_domain_events_clear(), 0);
+        assert_eq!(syntic_dictation_start(), 0);
+
+        let review = CString::new("hello review").expect("cstring");
+        assert_eq!(syntic_dictation_finalize_review(review.as_ptr()), 0);
+        assert_eq!(syntic_dictation_cancel(), 0);
+
+        let domain_events_pointer = syntic_domain_events_since_json(0, 16);
+        assert!(!domain_events_pointer.is_null());
+
+        // SAFETY: pointer returned by `syntic_domain_events_since_json` is a valid C string.
+        let domain_events_payload = unsafe { CStr::from_ptr(domain_events_pointer) };
+        let domain_events_text = domain_events_payload.to_str().expect("utf8");
+        assert!(domain_events_text.contains("\"name\":\"dictation_review_cancelled\""));
+        assert!(domain_events_text.contains("\"phase_before\":\"reviewing\""));
+
+        // SAFETY: `domain_events_pointer` came from `syntic_domain_events_since_json`.
+        unsafe { syntic_string_free(domain_events_pointer) };
+
+        let signals_pointer = syntic_tool_runtime_signals_since_json(0, 16);
+        assert!(!signals_pointer.is_null());
+
+        // SAFETY: pointer returned by `syntic_tool_runtime_signals_since_json` is a valid C string.
+        let signals_payload = unsafe { CStr::from_ptr(signals_pointer) };
+        let signals_text = signals_payload.to_str().expect("utf8");
+        assert!(signals_text.contains("\"action\":\"abort_pending_tool_invocations\""));
+        assert!(signals_text.contains("\"reason\":\"dictation_review_cancelled\""));
+
+        // SAFETY: `signals_pointer` came from `syntic_tool_runtime_signals_since_json`.
+        unsafe { syntic_string_free(signals_pointer) };
+    }
+
+    #[test]
     fn append_partial_with_null_pointer_returns_null_status() {
+        let _guard = test_guard();
         assert_eq!(syntic_dictation_reset(), 0);
         assert_eq!(syntic_dictation_start(), 0);
         assert_eq!(syntic_dictation_append_partial(ptr::null()), 20);
@@ -704,6 +886,7 @@ mod tests {
 
     #[test]
     fn command_classification_json_contains_timer_kind() {
+        let _guard = test_guard();
         let utterance = CString::new("Stelle einen Timer auf 20min").expect("cstring");
         let payload_pointer = syntic_command_classify_json(utterance.as_ptr());
         assert!(!payload_pointer.is_null());
@@ -719,6 +902,7 @@ mod tests {
 
     #[test]
     fn command_safety_json_marks_rename_as_destructive() {
+        let _guard = test_guard();
         let utterance = CString::new("rename file report to final").expect("cstring");
         let payload_pointer = syntic_command_safety_json(utterance.as_ptr());
         assert!(!payload_pointer.is_null());
@@ -734,6 +918,7 @@ mod tests {
 
     #[test]
     fn stt_route_auto_short_utterance_prefers_local() {
+        let _guard = test_guard();
         let payload_pointer = syntic_stt_route_json(2, 0, 1, 2_000);
         assert!(!payload_pointer.is_null());
 
@@ -748,6 +933,7 @@ mod tests {
 
     #[test]
     fn core_error_event_is_exposed_via_events_json() {
+        let _guard = test_guard();
         assert_eq!(syntic_core_events_clear(), 0);
 
         let source = CString::new("macos.pipeline").expect("cstring");
@@ -773,6 +959,7 @@ mod tests {
 
     #[test]
     fn core_permission_event_accepts_null_detail_pointer() {
+        let _guard = test_guard();
         assert_eq!(syntic_core_events_clear(), 0);
 
         let source = CString::new("macos.audio").expect("cstring");
@@ -804,6 +991,7 @@ mod tests {
 
     #[test]
     fn core_telemetry_event_is_exposed_via_events_json() {
+        let _guard = test_guard();
         assert_eq!(syntic_core_events_clear(), 0);
 
         let source = CString::new("macos.pipeline").expect("cstring");

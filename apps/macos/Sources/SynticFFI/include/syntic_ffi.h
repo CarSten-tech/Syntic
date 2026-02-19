@@ -28,6 +28,8 @@ char *syntic_stt_route_json(uint8_t preference_mode,
                             uint8_t network_available,
                             uint32_t utterance_duration_ms);
 char *syntic_core_events_since_json(uint64_t last_seen_event_id, uint16_t limit);
+char *syntic_domain_events_since_json(uint64_t last_seen_event_id, uint16_t limit);
+char *syntic_tool_runtime_signals_since_json(uint64_t last_seen_signal_id, uint16_t limit);
 uint8_t syntic_core_event_report_error(const char *source,
                                        const char *code,
                                        const char *message);
@@ -42,6 +44,7 @@ uint8_t syntic_core_event_report_telemetry(const char *source,
                                            const char *context_json,
                                            uint32_t value_ms);
 uint8_t syntic_core_events_clear(void);
+uint8_t syntic_domain_events_clear(void);
 uint8_t syntic_dictation_reset(void);
 uint8_t syntic_dictation_start(void);
 uint8_t syntic_dictation_append_partial(const char *text);

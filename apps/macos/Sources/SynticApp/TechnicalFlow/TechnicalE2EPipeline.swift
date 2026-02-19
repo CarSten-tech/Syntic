@@ -10,6 +10,8 @@ final class TechnicalE2EPipeline: ObservableObject {
     @Published private(set) var latestTranscript = ""
     @Published private(set) var latestInjectionSummary = "-"
     @Published private(set) var coreEventsJSON = "{\"events\":[]}"
+    @Published private(set) var domainEventsJSON = "{\"events\":[]}"
+    @Published private(set) var toolRuntimeSignalsJSON = "{\"signals\":[]}"
     @Published private(set) var dictationStateJSON = "{}"
     @Published private(set) var telemetryLogPath = "-"
     @Published private(set) var logs: [String] = []
@@ -29,6 +31,8 @@ final class TechnicalE2EPipeline: ObservableObject {
     private var isTranscribing = false
     private var activeSessionStartedAtMs: UInt64?
     private var activeRouteProvider = "unknown"
+    private var lastSeenDomainEventID: UInt64 = 0
+    private var lastSeenToolRuntimeSignalID: UInt64 = 0
 
     init(
         coreBridge: SynticCoreVersionProviding,
@@ -54,7 +58,9 @@ final class TechnicalE2EPipeline: ObservableObject {
         dictationStateJSON = coreBridge.dictationStateJSON()
         telemetryLogPath = telemetryLogger.logFilePath
         _ = coreBridge.coreEventsClear()
+        _ = coreBridge.domainEventsClear()
         refreshCoreEventsFeed()
+        refreshDomainAndToolRuntimeFeeds()
         emitTelemetry(
             category: "e2e_flow",
             action: "pipeline_initialized",
@@ -189,6 +195,8 @@ final class TechnicalE2EPipeline: ObservableObject {
             fail("dictation_cancel_failed_status_\(cancelStatus)")
             return
         }
+
+        refreshDomainAndToolRuntimeFeeds()
 
         persistSessionRecord(
             outcome: .cancelled,
@@ -506,6 +514,63 @@ final class TechnicalE2EPipeline: ObservableObject {
         coreEventsJSON = coreBridge.coreEventsSinceJSON(lastSeenEventID: 0, limit: 64)
     }
 
+    private func refreshDomainAndToolRuntimeFeeds() {
+        let domainPayload = coreBridge.domainEventsSinceJSON(
+            lastSeenEventID: lastSeenDomainEventID,
+            limit: 64
+        )
+        domainEventsJSON = domainPayload
+        if let domainEvents = decodeDomainEvents(from: domainPayload) {
+            for domainEvent in domainEvents {
+                lastSeenDomainEventID = max(lastSeenDomainEventID, domainEvent.id)
+                appendLog(
+                    "Domain event consumed: id=\(domainEvent.id), name=\(domainEvent.name), source=\(domainEvent.source)."
+                )
+            }
+        }
+
+        let toolSignalsPayload = coreBridge.toolRuntimeSignalsSinceJSON(
+            lastSeenSignalID: lastSeenToolRuntimeSignalID,
+            limit: 64
+        )
+        toolRuntimeSignalsJSON = toolSignalsPayload
+        if let toolSignals = decodeToolRuntimeSignals(from: toolSignalsPayload) {
+            for signal in toolSignals {
+                lastSeenToolRuntimeSignalID = max(lastSeenToolRuntimeSignalID, signal.id)
+                appendLog(
+                    "Tool runtime signal consumed: id=\(signal.id), action=\(signal.action), reason=\(signal.reason)."
+                )
+                emitTelemetry(
+                    category: "tool_runtime",
+                    action: "signal_consumed",
+                    status: "ok",
+                    context: [
+                        "signal_id": "\(signal.id)",
+                        "action": signal.action,
+                        "reason": signal.reason,
+                        "origin_domain_event_id": "\(signal.originDomainEventID)",
+                    ]
+                )
+            }
+        }
+    }
+
+    private func decodeDomainEvents(from payload: String) -> [DomainEventEnvelope]? {
+        guard let data = payload.data(using: .utf8) else {
+            return nil
+        }
+        let decoded = try? JSONDecoder().decode(DomainEventsPayload.self, from: data)
+        return decoded?.events
+    }
+
+    private func decodeToolRuntimeSignals(from payload: String) -> [ToolRuntimeSignalEnvelope]? {
+        guard let data = payload.data(using: .utf8) else {
+            return nil
+        }
+        let decoded = try? JSONDecoder().decode(ToolRuntimeSignalsPayload.self, from: data)
+        return decoded?.signals
+    }
+
     private func setPhase(
         _ newPhase: String,
         trigger: String,
@@ -620,5 +685,43 @@ final class TechnicalE2EPipeline: ObservableObject {
 
     private static func nowMs() -> UInt64 {
         UInt64(Date().timeIntervalSince1970 * 1_000)
+    }
+}
+
+private struct DomainEventsPayload: Decodable {
+    let events: [DomainEventEnvelope]
+}
+
+private struct DomainEventEnvelope: Decodable {
+    let id: UInt64
+    let name: String
+    let source: String
+    let phaseBefore: String
+    let reviewTranscriptLength: UInt32
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case name
+        case source
+        case phaseBefore = "phase_before"
+        case reviewTranscriptLength = "review_transcript_length"
+    }
+}
+
+private struct ToolRuntimeSignalsPayload: Decodable {
+    let signals: [ToolRuntimeSignalEnvelope]
+}
+
+private struct ToolRuntimeSignalEnvelope: Decodable {
+    let id: UInt64
+    let action: String
+    let reason: String
+    let originDomainEventID: UInt64
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case action
+        case reason
+        case originDomainEventID = "origin_domain_event_id"
     }
 }

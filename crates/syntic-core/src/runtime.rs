@@ -1,6 +1,7 @@
 //! Core runtime root object.
 
 use crate::dictation::DictationSessionController;
+use crate::domain::{DomainEvent, DomainEventBus, ToolRuntimeSignal};
 use crate::events::{CoreEvent, CoreEventJournal};
 
 /// Semantic version of the current core runtime.
@@ -19,6 +20,7 @@ pub struct HealthSnapshot {
 pub struct CoreRuntime {
     dictation_session: DictationSessionController,
     core_events: CoreEventJournal,
+    domain_event_bus: DomainEventBus,
 }
 
 impl CoreRuntime {
@@ -87,11 +89,45 @@ impl CoreRuntime {
     pub fn core_events_recent(&self, limit: usize) -> Vec<CoreEvent> {
         self.core_events.events_recent(limit)
     }
+
+    pub fn record_dictation_review_cancelled_domain_event(
+        &mut self,
+        source: &str,
+        phase_before: &str,
+        review_transcript_length: u32,
+    ) {
+        self.domain_event_bus.record_dictation_review_cancelled(
+            source,
+            phase_before,
+            review_transcript_length,
+        );
+    }
+
+    pub fn clear_domain_events(&mut self) {
+        self.domain_event_bus.clear();
+    }
+
+    #[must_use]
+    pub fn domain_events_since(&self, last_seen_event_id: u64, limit: usize) -> Vec<DomainEvent> {
+        self.domain_event_bus
+            .domain_events_since(last_seen_event_id, limit)
+    }
+
+    #[must_use]
+    pub fn tool_runtime_signals_since(
+        &self,
+        last_seen_signal_id: u64,
+        limit: usize,
+    ) -> Vec<ToolRuntimeSignal> {
+        self.domain_event_bus
+            .tool_runtime_signals_since(last_seen_signal_id, limit)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{CORE_VERSION, CoreRuntime};
+    use crate::domain::DomainEventPayload;
     use crate::events::CoreEventPayload;
 
     #[test]
@@ -148,5 +184,28 @@ mod tests {
                 panic!("expected telemetry payload")
             }
         }
+    }
+
+    #[test]
+    fn runtime_exposes_review_cancel_domain_event_and_tool_signal() {
+        let mut runtime = CoreRuntime::new();
+        runtime.record_dictation_review_cancelled_domain_event("ffi.dictation", "reviewing", 32);
+
+        let domain_events = runtime.domain_events_since(0, 8);
+        assert_eq!(domain_events.len(), 1);
+        match &domain_events[0].payload {
+            DomainEventPayload::DictationReviewCancelled {
+                phase_before,
+                review_transcript_length,
+                ..
+            } => {
+                assert_eq!(phase_before, "reviewing");
+                assert_eq!(*review_transcript_length, 32);
+            }
+        }
+
+        let tool_signals = runtime.tool_runtime_signals_since(0, 8);
+        assert_eq!(tool_signals.len(), 1);
+        assert_eq!(tool_signals[0].origin_domain_event_id, domain_events[0].id);
     }
 }

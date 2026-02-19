@@ -130,7 +130,7 @@ struct ContentView: View {
 
             Divider()
 
-            Text("Technical E2E: Hotkey -> Audio -> Routing -> Review -> Injection")
+            Text("Technical E2E: Hotkey -> Audio -> Routing -> Review -> Tool Runtime -> Injection")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
@@ -207,6 +207,14 @@ struct ContentView: View {
                 .foregroundStyle(.secondary)
                 .lineLimit(3)
             Text("Core events: \(technicalE2EPipeline.coreEventsJSON)")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .lineLimit(4)
+            Text("Domain events: \(technicalE2EPipeline.domainEventsJSON)")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .lineLimit(4)
+            Text("Tool runtime signals: \(technicalE2EPipeline.toolRuntimeSignalsJSON)")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .lineLimit(4)

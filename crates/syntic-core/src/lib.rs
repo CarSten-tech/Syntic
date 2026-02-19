@@ -2,6 +2,7 @@
 
 pub mod command;
 pub mod dictation;
+pub mod domain;
 pub mod events;
 mod runtime;
 pub mod stt;
