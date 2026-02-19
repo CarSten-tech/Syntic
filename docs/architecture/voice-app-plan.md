@@ -952,3 +952,148 @@ Onboarding muss Vertrauen aufbauen, nicht erschöpfen. Jeder Schritt kommunizier
 - Schritt 4 — Accessibility (optional, aber empfohlen): Erklärung warum. Link öffnet Systemeinstellungen. App prüft aktiv alle 500ms ob Permission erteilt.
 - Schritt 5 — KI-Provider: Auswahl (OpenAI / Anthropic / Später). Bei Wahl: Key-Feld erscheint. Validierung läuft nach Eingabe. Feedback inline.
 - Schritt 6 — Zusammenfassung: zeigt aktiven Status jeder Permission und konfigurierten Features. Kein Modal — direkt bereit.
+
+---
+
+## 8. MVP — macOS-first (4–8 Wochen)
+
+Scope ist für ein Team von 1–2 Personen. Bei 1 Person: Must-Haves in 8 Wochen. Bei 2 Personen: Must + Should in 7 Wochen.
+
+---
+
+### Must Have — ohne das kein MVP
+
+**App-Grundstruktur:**
+- Menu Bar App (`LSUIElement`, kein Dock-Icon, kein App-Switcher-Eintrag)
+- LaunchAgent-Registrierung (Login-Start, launchd-Restart bei Crash)
+- Hardened Runtime + Notarization (Direct Distribution, kein App Store)
+- Rust-Core-Bibliothek mit Swift-Shell und definierter FFI-Grenze
+- SQLite (rusqlite + SQLCipher) für Settings und aktive Timer; Schlüssel im Keychain
+
+**Diktat-Flow:**
+- Globaler Diktat-Hotkey (CGEventTap, Input Monitoring Permission)
+- Audio Capture via AVAudioEngine (16 kHz PCM Mono, RAM-only)
+- Energy-basierte VAD (Auto-Stop bei Stille)
+- STT via OpenAI Whisper API (cloud, BYOK)
+- Text Injection via AX API in fokussiertes Feld; Clipboard-Fallback wenn AX fehlschlägt
+- Dictation Indicator (minimal, schwebend, zeigt Wellenform + Live-Transkription)
+
+**Command Mode:**
+- Globaler Command-Hotkey (CGEventTap)
+- Command Palette (NSPanel, non-activating, Spotlight-Proportionen, < 100 ms Erscheinungszeit)
+- Sprach- und Texteingabe gleichwertig
+- Intent-Erkennung via LLM (OpenAI, JSON-Schema-enforced Output)
+- Safety Gate + Confirmation Layer vor jeder Tool-Ausführung
+- Regelbasierter Fallback-Classifier für Timer und Notiz (kein LLM nötig)
+
+**Tools:**
+- `TimerTool`: lokaler Timer, macOS UserNotifications, überlebt App-Neustart via SQLite
+- `NoteTool`: Markdown-Datei in konfiguriertem Ordner
+- `FileMoveOp`: mit Finder-Selection-Kontext (AppleScript), Confirmation, Zielordner-Anlegen-Abfrage
+- `FileRenameOp`: mit Undo-Eintrag
+
+**Security & Privacy (Basis):**
+- BYOK: OpenAI Key in macOS Keychain (`kSecAttrAccessibleWhenUnlockedThisDeviceOnly`)
+- Key nie im UI-State, nie in Logs, nie in SQLite
+- Redaction Layer in Logs
+- Canonical Path Resolution vor jeder Dateioperation
+
+**Onboarding:**
+- 6-Schritt-Flow (Mikrofon, Hotkeys, Accessibility, Provider, Zusammenfassung)
+- Permission-Staging: jede Permission einzeln und erklärend
+- Zustand gespeichert: Neustart setzt an letztem Schritt fort
+
+**Grundlegendes Observability:**
+- Strukturiertes JSON-Logging, lokal, max. 10 MB rolling
+- Kein Crash Reporting im MVP (opt-in ab Should-Have)
+
+---
+
+### Should Have — wichtig, aber MVP ohne machbar
+
+- **Sensitive Mode Toggle:** Cloud deaktivieren, SFSpeechRecognizer als on-device STT, kein Logging, kein Crash Reporting, Schloss-Indikator im Menu Bar Icon
+- **FileCopyOp + CreateDirectoryOp:** komplettiert die Datei-Action-Suite
+- **ReminderTool:** wie Timer, optionaler Kalender-Export (benötigt Calendar-Permission)
+- **Sparkle 2 Updates:** EdDSA-signierte Updates, Changelog-Anzeige, kein Silent Install
+- **Opt-in Crash Reporting:** Sentry mit lokal redaktierten Reports, Toggle im Onboarding
+- **Konfigurierbarer Hotkey:** Nutzer kann Diktat- und Command-Hotkey in Settings anpassen (nicht nur Default)
+- **Transcript History:** letzte 50 Befehle in SQLite, 7 Tage Retention, in Settings einsehbar und löschbar
+- **Konfigurierbares STT-Routing:** Toggle "Immer lokal / Immer Cloud / Auto" in Settings
+- **Dictation Indicator Position:** konfigurierbar (nahe Cursor / Bildschirmrand unten / Bildschirmrand oben)
+
+---
+
+### Could Have — verschoben auf Post-MVP
+
+- whisper.cpp lokal via Metal/CoreML (Modell-Download, on-device Whisper-Qualität)
+- PDF-Merge Tool (PDFKit)
+- Medienkonvertierung (ffmpeg)
+- Plugin Framework (Modul 9)
+- Windows / Linux Portierung
+- Konfigurierbares LLM-Failover (Primary + Fallback Provider)
+- Enterprise MDM-Policy-Lock für Sensitive Mode
+- Silero VAD (bessere Geräuschunterdrückung)
+- Anthropic als BYOK-Provider (Erweiterung neben OpenAI)
+
+---
+
+### Spike-Plan — vor dem Hauptcoding
+
+Spikes werden in Woche 1 durchgeführt, bevor Core-Implementierung beginnt. Ergebnis jedes Spikes ist eine dokumentierte Entscheidung mit Konsequenzen — kein "wir schauen dann mal".
+
+**Spike 1 — Text Injection Kompatibilität (1–2 Tage)**
+- Frage: Welche Injection-Methode funktioniert in welchen App-Typen?
+- Test-Apps: TextEdit (native Cocoa), Safari (WebKit), Chrome (Chromium), Notion Web, Slack (Electron), VS Code (Electron), Microsoft Word (Office), Figma (Electron)
+- Methoden: `AXUIElementSetAttributeValue` vs `CGEventPost` (Keystroke-Simulation)
+- Erwartetes Ergebnis: Kompatibilitäts-Matrix. Bekannte Problem-Apps werden in der App als "Clipboard-Fallback"-Kandidaten hartcodiert.
+- Risiko wenn Spike schlecht ausgeht: Electron-Apps (der häufigste Use Case vieler Nutzer) funktionieren nicht mit AX-API → Clipboard-Fallback wird primärer Weg für diese Apps, mit Benachrichtigung.
+
+**Spike 2 — Finder Selection Zuverlässigkeit (0.5 Tage)**
+- Frage: Wann gibt AppleScript eine leere Liste zurück, obwohl Dateien selektiert sind?
+- Test-Cases: Finder im Hintergrund, mehrere Finder-Fenster, Finder nicht geöffnet, Selektion in Column View / List View / Gallery View
+- Erwartetes Ergebnis: Liste der Bedingungen, unter denen Selektion zuverlässig ausgelesen werden kann. UI-Logik für "kein Kontext"-Zustand wird daraus abgeleitet.
+- Risiko: AppleScript-Timing ist grundsätzlich unzuverlässig → alternativer Ansatz via AX-API auf Finder-Fenster (komplexer, aber zuverlässiger).
+
+**Spike 3 — STT Latenz und Qualität (1 Tag)**
+- Frage: Ist OpenAI Whisper API schnell genug für "flowy" Diktat? Was ist die reale End-to-End-Latenz?
+- Messung: Hotkey-Press bis erste Wörter im Dictation Indicator sichtbar. Ziel: unter 300 ms perceived.
+- Test-Inputs: 2s, 5s, 10s Sprach-Segmente auf DE und EN, mit und ohne Hintergrundgeräusch.
+- Vergleich: OpenAI Whisper (Streaming) vs SFSpeechRecognizer (lokal) — Qualität und Latenz.
+- Erwartetes Ergebnis: Entscheidung ob OpenAI Streaming für kurze Befehle (< 5s) geeignet ist oder ob SFSpeechRecognizer als primäre Methode für Commands besser ist, mit Cloud-Upgrade für längere Diktate.
+- Risiko: Whisper API Latenz > 500 ms → SFSpeechRecognizer wird primärer STT-Provider auch für Cloud-Modus (nur für lange Diktate Cloud-Upgrade).
+
+**Spike 4 — Notarization + Entitlements (0.5 Tage)**
+- Frage: Welche Entitlements braucht die App exakt, und gibt Apple die Notarization dafür durch?
+- Test: Minimale App mit CGEventTap + AX-Injection + NSAppleScript-Finder-Zugriff notarisieren.
+- Entitlements zu prüfen: `com.apple.security.device.audio-input`, `com.apple.security.temporary-exception.apple-events`, `com.apple.security.cs.allow-jit` (nur falls Metal-Shader nötig).
+- Risiko: Notarization-Rejection durch Apple für spezifische Entitlement-Kombination → Fallback-Strategie: weniger Entitlements, einzelne Features degradieren. Im schlimmsten Fall: Input Monitoring + AX gleichzeitig sind problematisch → Entscheidung welches Feature Vorrang hat.
+
+---
+
+### Zeitplan (grob)
+
+- **Woche 1:** Alle 4 Spikes. Projektstruktur aufsetzen: Rust-Workspace, Swift-Package, FFI-Bridge-Skeleton, CI-Pipeline (lint, test, build, cargo audit).
+- **Woche 2:** Core-Infrastruktur: Audio Capture + VAD, STT-Layer-Interface + OpenAI-Adapter, Keychain-Adapter, SQLite-Schema + Migrations, structured Logging.
+- **Woche 3:** macOS Platform-Adapter: GlobalHotkeyAdapter (CGEventTap), TextInjectionAdapter (AX + CGEvent Fallback), FinderSelectionAdapter (AppleScript), NotificationAdapter (UserNotifications).
+- **Woche 4:** LLM-Orchestration: Intent Classifier, Safety Gate, Confirmation Layer. Tool Runtime: TimerTool, NoteTool, FileMoveOp, FileRenameOp.
+- **Woche 5:** UI-Shell: Menu Bar + Popover, Command Palette (NSPanel), Dictation Indicator, Settings-Fenster (Grundversion). Onboarding (alle 6 Schritte).
+- **Woche 6:** Integration aller Schichten. E2E-Tests der 6 Kernflows. Fehlerbehandlung und Fallbacks verifizieren. Notarization-Lauf.
+- **Woche 7–8:** Hardening, Should-Haves nach Kapazität, Beta-User-Feedback einarbeiten, Performance-Profiling (Speicher, CPU bei dauerhaftem Menu Bar Betrieb).
+
+---
+
+### Risiken & Unknowns
+
+**Technische Risiken:**
+
+- **Text Injection in Electron-Apps:** Electron-Apps (Slack, Notion Desktop, VS Code, Figma) blockieren häufig AX-Injection. Wahrscheinlich, dass Clipboard-Fallback für diese Apps notwendig ist. Abhängig von Spike 1. Akzeptiertes Risiko — Clipboard-Fallback ist funktional, wenn auch nicht nahtlos.
+- **Apple Notarization-Änderungen:** Apple kann Entitlement-Policies ohne Vorankündigung ändern. CGEventTap + AX-Injection zusammen sind eine unübliche Kombination. Spike 4 klärt das früh. Falls Rejection: Entscheidung welches Feature degradiert.
+- **OpenAI Whisper API Latenz:** Real-World-Latenz unter realen Netzwerkbedingungen kann variieren. Ziel 300 ms ist ambitioniert. Falls nicht erreichbar: SFSpeechRecognizer für kurze Befehle als primary, Whisper für lange Diktate. Qualitätsabstrich für Command-Erkennung möglicherweise spürbar.
+- **LLM-Halluzinationen bei Intent-Klassifikation:** Ein LLM kann falsche Intents erkennen oder Parameter falsch extrahieren. Mitigation ist Safety Gate + Confirmation Layer. Restrisiko: Nutzer bestätigt reflexartig. Beobachten in Beta.
+- **CGEventTap in zukünftigen macOS-Versionen:** Apple hat Input Monitoring 2019 verschärft. Weitere Verschärfungen sind möglich aber unwahrscheinlich kurzfristig. Kein vollständiger Workaround außer App Store Rewrite (inakzeptabel). Dokumentiert als strategisches Risiko.
+
+**Projekt-Risiken:**
+
+- **Scope-Creep:** "Nur noch schnell X dazu" zerstört 4–8-Wochen-Pläne. Could-Have-Liste ist die Barriere. Alles nicht in Must/Should landet dort.
+- **FFI-Komplexität Rust↔Swift:** Die Grenzschicht zwischen Rust-Core und Swift-Shell ist technisch anspruchsvoll (Swift-Concurrency + Rust async). Spike 1 adressiert das implizit. Explizit: FFI-Bridge-Design muss in Woche 1 stehen, nicht nachträglich.
+- **Teamgröße:** Bei 1 Person ist Woche 5 (UI) der kritische Pfad — UI-Arbeit wird oft unterschätzt. Should-Haves sind explizit als optional markiert, damit sie nicht zum Bottleneck werden.
