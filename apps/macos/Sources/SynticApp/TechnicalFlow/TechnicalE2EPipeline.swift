@@ -13,6 +13,7 @@ final class TechnicalE2EPipeline: ObservableObject {
     @Published private(set) var domainEventsJSON = "{\"events\":[]}"
     @Published private(set) var toolRuntimeSignalsJSON = "{\"signals\":[]}"
     @Published private(set) var toolRuntimeQueueJSON = "{\"pending\":[],\"running\":[],\"completed\":[],\"cancelled\":[],\"failed\":[]}"
+    @Published private(set) var toolRuntimeExecutionLogPath = "-"
     @Published private(set) var dictationStateJSON = "{}"
     @Published private(set) var telemetryLogPath = "-"
     @Published private(set) var logs: [String] = []
@@ -27,6 +28,7 @@ final class TechnicalE2EPipeline: ObservableObject {
     private let localSttAdapter: STTTranscribing
     private let cloudSttAdapter: STTTranscribing
     private let textInjectionAdapter: TextInjecting
+    private let toolExecutor: ToolExecuting
     private let telemetryLogger: StructuredTelemetryLogging
 
     private var isTranscribing = false
@@ -51,6 +53,7 @@ final class TechnicalE2EPipeline: ObservableObject {
         localSttAdapter: STTTranscribing = LocalStubSTTAdapter(),
         cloudSttAdapter: STTTranscribing = CloudStubSTTAdapter(),
         textInjectionAdapter: TextInjecting = MacOSTextInjectionAdapter(),
+        toolExecutor: ToolExecuting = FileBackedToolExecutor(),
         telemetryLogger: StructuredTelemetryLogging = NDJSONTelemetryLogger()
     ) {
         self.coreBridge = coreBridge
@@ -61,10 +64,12 @@ final class TechnicalE2EPipeline: ObservableObject {
         self.localSttAdapter = localSttAdapter
         self.cloudSttAdapter = cloudSttAdapter
         self.textInjectionAdapter = textInjectionAdapter
+        self.toolExecutor = toolExecutor
         self.telemetryLogger = telemetryLogger
 
         dictationStateJSON = coreBridge.dictationStateJSON()
         telemetryLogPath = telemetryLogger.logFilePath
+        toolRuntimeExecutionLogPath = toolExecutor.executionLogPath
         _ = coreBridge.coreEventsClear()
         _ = coreBridge.domainEventsClear()
         refreshCoreEventsFeed()
@@ -605,12 +610,23 @@ final class TechnicalE2EPipeline: ObservableObject {
         let invocationID = "tool-\(nextToolInvocationOrdinal)"
         nextToolInvocationOrdinal += 1
 
+        let intentPayload = decodeCommandIntent(from: coreBridge.commandClassifyJSON(normalizedTranscript))
+            ?? CommandIntentPayload.unknown
+        let safetyPayload = decodeCommandSafety(from: coreBridge.commandSafetyJSON(normalizedTranscript))
+            ?? CommandSafetyPayload.rejectedUnknown
+
         pendingToolInvocations.append(
             ToolInvocation(
                 id: invocationID,
                 transcript: normalizedTranscript,
                 origin: origin,
-                queuedAtMs: Self.nowMs()
+                queuedAtMs: Self.nowMs(),
+                intentKind: intentPayload.kind,
+                intentSummary: intentPayload.summary,
+                confidencePercent: intentPayload.confidencePercent,
+                safetyDecision: safetyPayload.decision,
+                destructive: safetyPayload.destructive,
+                safetyReason: safetyPayload.reason
             )
         )
 
@@ -623,6 +639,8 @@ final class TechnicalE2EPipeline: ObservableObject {
                 "invocation_id": invocationID,
                 "origin": origin,
                 "queue_depth": "\(pendingToolInvocations.count)",
+                "intent_kind": intentPayload.kind,
+                "safety_decision": safetyPayload.decision,
             ]
         )
         refreshToolRuntimeQueueSnapshot()
@@ -657,9 +675,19 @@ final class TechnicalE2EPipeline: ObservableObject {
                 do {
                     try await Task.sleep(nanoseconds: 1_200_000_000)
                     try Task.checkCancellation()
-
-                    let intentJSON = self.coreBridge.commandClassifyJSON(invocation.transcript)
-                    let safetyJSON = self.coreBridge.commandSafetyJSON(invocation.transcript)
+                    let executionResult = try self.toolExecutor.execute(
+                        plan: ToolExecutionPlan(
+                            invocationID: invocation.id,
+                            transcript: invocation.transcript,
+                            origin: invocation.origin,
+                            intentKind: invocation.intentKind,
+                            intentSummary: invocation.intentSummary,
+                            confidencePercent: invocation.confidencePercent,
+                            safetyDecision: invocation.safetyDecision,
+                            destructive: invocation.destructive,
+                            safetyReason: invocation.safetyReason
+                        )
+                    )
                     let latencyMs = self.runningInvocationLatencyMs(for: invocation.id)
 
                     guard self.runningToolInvocationTasks.removeValue(forKey: invocation.id) != nil else {
@@ -668,7 +696,7 @@ final class TechnicalE2EPipeline: ObservableObject {
                     self.runningToolInvocationStartedAtMs.removeValue(forKey: invocation.id)
                     self.completedToolInvocationIDs.append(invocation.id)
                     self.appendLog(
-                        "Tool invocation completed: id=\(invocation.id), intent=\(Self.compactPreview(intentJSON))."
+                        "Tool invocation completed: id=\(invocation.id), outcome=\(executionResult.outcome.rawValue), detail=\(executionResult.detail)"
                     )
                     self.emitTelemetry(
                         category: "tool_runtime",
@@ -677,8 +705,10 @@ final class TechnicalE2EPipeline: ObservableObject {
                         context: [
                             "invocation_id": invocation.id,
                             "origin": invocation.origin,
-                            "intent": Self.compactPreview(intentJSON),
-                            "safety": Self.compactPreview(safetyJSON),
+                            "intent_kind": invocation.intentKind,
+                            "safety_decision": invocation.safetyDecision,
+                            "outcome": executionResult.outcome.rawValue,
+                            "artifact_path": executionResult.artifactPath ?? "",
                         ],
                         valueMs: latencyMs
                     )
@@ -780,7 +810,10 @@ final class TechnicalE2EPipeline: ObservableObject {
                     id: $0.id,
                     origin: $0.origin,
                     transcript_length: $0.transcript.count,
-                    queued_at_ms: $0.queuedAtMs
+                    queued_at_ms: $0.queuedAtMs,
+                    intent_kind: $0.intentKind,
+                    safety_decision: $0.safetyDecision,
+                    destructive: $0.destructive
                 )
             },
             running: runningToolInvocationTasks.keys.sorted(),
@@ -804,6 +837,20 @@ final class TechnicalE2EPipeline: ObservableObject {
         }
         let decoded = try? JSONDecoder().decode(DomainEventsPayload.self, from: data)
         return decoded?.events
+    }
+
+    private func decodeCommandIntent(from payload: String) -> CommandIntentPayload? {
+        guard let data = payload.data(using: .utf8) else {
+            return nil
+        }
+        return try? JSONDecoder().decode(CommandIntentPayload.self, from: data)
+    }
+
+    private func decodeCommandSafety(from payload: String) -> CommandSafetyPayload? {
+        guard let data = payload.data(using: .utf8) else {
+            return nil
+        }
+        return try? JSONDecoder().decode(CommandSafetyPayload.self, from: data)
     }
 
     private func decodeToolRuntimeSignals(from payload: String) -> [ToolRuntimeSignalEnvelope]? {
@@ -929,15 +976,6 @@ final class TechnicalE2EPipeline: ObservableObject {
     private static func nowMs() -> UInt64 {
         UInt64(Date().timeIntervalSince1970 * 1_000)
     }
-
-    private static func compactPreview(_ value: String, maxLength: Int = 120) -> String {
-        let sanitized = value.replacingOccurrences(of: "\n", with: " ")
-        guard sanitized.count > maxLength else {
-            return sanitized
-        }
-        let endIndex = sanitized.index(sanitized.startIndex, offsetBy: maxLength)
-        return "\(sanitized[sanitized.startIndex ..< endIndex])..."
-    }
 }
 
 private struct ToolInvocation {
@@ -945,6 +983,12 @@ private struct ToolInvocation {
     let transcript: String
     let origin: String
     let queuedAtMs: UInt64
+    let intentKind: String
+    let intentSummary: String
+    let confidencePercent: UInt8
+    let safetyDecision: String
+    let destructive: Bool
+    let safetyReason: String
 }
 
 private struct ToolRuntimeQueueSnapshot: Codable {
@@ -960,6 +1004,9 @@ private struct ToolInvocationSnapshot: Codable {
     let origin: String
     let transcript_length: Int
     let queued_at_ms: UInt64
+    let intent_kind: String
+    let safety_decision: String
+    let destructive: Bool
 }
 
 private struct DomainEventsPayload: Decodable {
@@ -998,4 +1045,37 @@ private struct ToolRuntimeSignalEnvelope: Decodable {
         case reason
         case originDomainEventID = "origin_domain_event_id"
     }
+}
+
+private struct CommandIntentPayload: Decodable {
+    let kind: String
+    let summary: String
+    let confidencePercent: UInt8
+    let requiresConfirmation: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case kind
+        case summary
+        case confidencePercent = "confidence_percent"
+        case requiresConfirmation = "requires_confirmation"
+    }
+
+    static let unknown = CommandIntentPayload(
+        kind: "unknown",
+        summary: "Intent parse failed",
+        confidencePercent: 0,
+        requiresConfirmation: false
+    )
+}
+
+private struct CommandSafetyPayload: Decodable {
+    let decision: String
+    let destructive: Bool
+    let reason: String
+
+    static let rejectedUnknown = CommandSafetyPayload(
+        decision: "reject",
+        destructive: false,
+        reason: "safety_parse_failed"
+    )
 }

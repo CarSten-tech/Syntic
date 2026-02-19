@@ -31,5 +31,10 @@ let package = Package(
             dependencies: ["SynticFFI"],
             path: "Sources/SynticApp"
         ),
+        .testTarget(
+            name: "SynticAppTests",
+            dependencies: ["SynticApp"],
+            path: "Tests/SynticAppTests"
+        ),
     ]
 )
