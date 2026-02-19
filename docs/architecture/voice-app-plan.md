@@ -1097,3 +1097,214 @@ Spikes werden in Woche 1 durchgeführt, bevor Core-Implementierung beginnt. Erge
 - **Scope-Creep:** "Nur noch schnell X dazu" zerstört 4–8-Wochen-Pläne. Could-Have-Liste ist die Barriere. Alles nicht in Must/Should landet dort.
 - **FFI-Komplexität Rust↔Swift:** Die Grenzschicht zwischen Rust-Core und Swift-Shell ist technisch anspruchsvoll (Swift-Concurrency + Rust async). Spike 1 adressiert das implizit. Explizit: FFI-Bridge-Design muss in Woche 1 stehen, nicht nachträglich.
 - **Teamgröße:** Bei 1 Person ist Woche 5 (UI) der kritische Pfad — UI-Arbeit wird oft unterschätzt. Should-Haves sind explizit als optional markiert, damit sie nicht zum Bottleneck werden.
+
+---
+
+## 9. Roadmap nach MVP
+
+Jeder Milestone hat eine klare Eintrittsbedingung: der vorherige Milestone ist stabil, getestet und produktiv im Einsatz. Kein paralleles Portieren während der macOS-Basisqualität noch unsicher ist.
+
+---
+
+### Milestone 1 — MVP Stabilisierung (2–3 Wochen nach MVP-Launch)
+
+Eintrittsbedingung: MVP ist geliefert und notarisiert.
+
+- Bugfixes aus Beta-User-Feedback
+- Performance-Profiling: Speicherverbrauch bei 8h Dauerbetrieb (Menu Bar Process), CPU bei aktivem Hotkey-Listener
+- STT-Latenz-Optimierung basierend auf realen Nutzungsdaten (Streaming vs. Batch-Upload-Entscheidung verfeinern)
+- Sparkle Update-Infrastruktur aufsetzen und testen (erster Over-the-Air-Update-Durchlauf)
+- Should-Have-Features nachholen falls im MVP nicht geschafft (insbesondere Sensitive Mode und konfigurierbarer Hotkey)
+- Security-Review der Core-Flows: Prompt Injection Tests, Key-Handling-Audit, Canonical Path Tests mit Edge Cases
+
+Ziel: macOS-Basis ist produktionsreif und vertrauenswürdig. Erst dann beginnt Phase 2.
+
+---
+
+### Milestone 2a — Windows (2–3 Monate nach MVP-Stabilisierung)
+
+Eintrittsbedingung: Rust-Core ist vollständig stabil, alle Core-Interfaces sind durch macOS-Nutzung battle-tested.
+
+**Was neu gebaut wird (WinUI 3 UI-Shell):**
+- Windows System Tray via `NotifyIcon` (WinUI 3)
+- Command Palette als Top-Level-Fenster ohne Taskbar-Eintrag (`OverlappedPresenter`)
+- Dictation Indicator als Always-on-Top-Fenster
+
+**Neue Platform-Adapter:**
+- `GlobalHotkeyAdapter` (Win32 `RegisterHotKey`)
+- `TextInjectionAdapter` (`SendInput` primary, `IUIAutomation` für präzise Injection)
+- `ExplorerSelectionAdapter` (`IShellWindows` + `IShellView` via COM)
+- `KeychainAdapter` (Windows DPAPI via `CryptProtectData`)
+- `NotificationAdapter` (Windows Toast Notifications via WinRT)
+- `AudioCaptureAdapter` (WASAPI)
+
+**Distribution & Signierung:**
+- Authenticode-Signierung mit EV Code Signing Certificate
+- WinSparkle für Update-Mechanismus
+- MSIX optional als Ergänzung (Windows Package Manager)
+
+**Funktionsumfang Windows:**
+- Identisch mit macOS-MVP — kein Feature-Downgrade, kein Feature-Vorsprung
+- Explorer-Selektion als Äquivalent zur Finder-Selektion
+
+**Risiken Windows:**
+- COM-Interop aus Rust ist komplex (windows-rs crate) — einplanen
+- AV-Software kann Low-Level-Hooks als verdächtig melden — EV-Zertifikat und Dokumentation notwendig
+- WASAPI-Initialisierung hat mehr Edge Cases als AVAudioEngine — Audio-Capture-Spike vor Implementierung
+
+---
+
+### Milestone 2b — Linux (parallel zu Windows oder direkt danach, 1–2 Monate)
+
+Eintrittsbedingung: Windows-Milestone abgeschlossen oder fortgeschritten genug, dass ein zweites Team-Mitglied Linux parallel angehen kann.
+
+**Was neu gebaut wird (GTK4 UI-Shell):**
+- System Tray via libappindicator (GNOME) / KStatusNotifierItem (KDE)
+- Command Palette als GTK4-Fenster (ohne Taskbar-Eintrag via `skip_taskbar_hint`)
+
+**Neue Platform-Adapter:**
+- `GlobalHotkeyAdapter` (X11: `XGrabKey` via x11-dl)
+- `TextInjectionAdapter` (X11: `XSendEvent`)
+- `FileManagerSelectionAdapter` (best-effort: Nautilus D-Bus / Dolphin D-Bus; manuelle Pfadeingabe als Primary)
+- `SecretStorageAdapter` (libsecret / GNOME Keyring)
+- `NotificationAdapter` (libnotify)
+- `AudioCaptureAdapter` (PipeWire primary, ALSA als Fallback)
+
+**Distribution:**
+- AppImage als primäres Format (keine Installation, portable)
+- Flatpak als Ergänzung (Sandbox-Einschränkungen für XGrabKey müssen geprüft werden — ggf. x11 portal nötig)
+- Kein Snap (Snap-Sandbox blockiert X11-Hooks zuverlässig)
+
+**Funktionsumfang Linux:**
+- Globale Hotkeys auf X11 vollständig; Wayland als "experimental" markiert (KDE D-Bus best-effort, GNOME kein stabiles Interface)
+- Text Injection auf X11 vollständig; Wayland: Clipboard-Fallback als primärer Weg
+- File Manager Selection: best-effort für Nautilus und Dolphin, manuelle Eingabe immer verfügbar
+- Ansonsten identischer Funktionsumfang wie macOS und Windows
+
+**Risiken Linux:**
+- DE/WM-Fragmentierung — offizieller Support nur GNOME und KDE Plasma
+- Wayland-Transition macht X11-basierten Ansatz langfristig obsolet — wird als technische Schuld dokumentiert und in Milestone 4+ adressiert
+
+---
+
+### Milestone 3 — On-device Modelle (2–3 Monate, parallel zu oder nach Desktop-Phase)
+
+Eintrittsbedingung: macOS-MVP stabil, STT-Routing-Interface ist im Core sauber definiert.
+
+**On-device STT (whisper.cpp):**
+- whisper.cpp via Metal (macOS Apple Silicon) und CoreML (macOS Intel) in den STT-Layer integrieren
+- Modell-Download-Flow in Settings: Modellgröße-Auswahl (tiny 75 MB / base 145 MB / small 466 MB / medium 1.5 GB), SHA-256-Verifikation vor Nutzung, Download-Progress in UI
+- whisper.cpp ersetzt SFSpeechRecognizer als bevorzugte on-device Option — deutlich bessere Qualität
+- Sensitive Mode: whisper.cpp als STT-Default, SFSpeechRecognizer als Fallback falls kein Modell geladen
+
+**On-device LLM (GGUF via candle.rs oder llama.cpp-bindings):**
+- Kleine Instruction-tuned Modelle für Intent-Klassifikation (Qwen 0.5B–1.5B, Phi-3 Mini oder äquivalent) — Ziel: schnelle Intent-Erkennung ohne Cloud
+- Routing-Logik: Intent-Klassifikation lokal, komplexere Reasoning-Aufgaben optional Cloud
+- Modell-Download identisch wie bei whisper.cpp (SHA-256, Progress)
+- Sensitive Mode: lokales LLM erzwungen, Command Mode vollständig offline verfügbar
+
+**Anforderungen:**
+- Initialisierungslatenz des lokalen Modells muss unter 2 Sekunden beim ersten Aufruf pro Session liegen (warmup bei App-Start)
+- Speicherverbrauch für tiny whisper + kleines LLM zusammen unter 800 MB RAM — Ziel für Apple Silicon M1/M2 mit 8 GB
+
+---
+
+### Milestone 4a — iOS (3–4 Monate, nach Desktop-Phase)
+
+Eintrittsbedingung: Rust-Core ist iOS-kompatibel compiliert (aarch64-apple-ios Target). Core-Interfaces sind stabil.
+
+**Was neu gebaut wird (SwiftUI iOS UI-Shell):**
+- Haupt-App mit In-App Command Palette
+- Keyboard Extension (`UIInputViewController`) als Custom System Keyboard — Diktat-Button in Tastatur
+- Share Sheet Extension für File Actions
+
+**Neue Platform-Adapter (iOS-spezifisch):**
+- `SpeechRecognitionAdapter` (SFSpeechRecognizer — kein Netzwerkzugriff erforderlich)
+- `AppIntentsAdapter` (AppIntents Framework, iOS 16+) — Timer, Notiz, Datei teilen via Siri
+- `KeychainAdapter` (iOS Keychain, `kSecAttrAccessibleWhenUnlocked`)
+- `NotificationAdapter` (UNUserNotificationCenter + BGTaskScheduler für Timer)
+
+**Funktionsumfang iOS — realistisch:**
+- In-App Diktat und Command Mode: vollständig
+- Systemweites Diktat via Keyboard Extension: funktioniert in Apps, die Custom Keyboards akzeptieren; kein Hotkey möglich
+- File Actions via Share Sheet: Dateien aus anderen Apps teilen und bearbeiten
+- AppIntents: Timer, Notizen via Siri/Shortcuts aufrufbar
+- Kein globaler Hotkey: iOS erlaubt das nicht — nicht ankündigen, nicht simulieren
+- Cloud-STT: nur mit "Vollzugriff erlauben" (Open Access) in der Keyboard Extension; SFSpeechRecognizer funktioniert ohne
+
+**Was auf iOS explizit nicht möglich ist:**
+- Systemweiter Hintergrund-Lauscher für Sprachbefehle
+- Dauerhafter Background-Prozess für Hotkey-Überwachung
+- Finder/Files-App-Selektion auslesen (keine API verfügbar)
+
+---
+
+### Milestone 4b — Android (1–2 Monate nach iOS, oder parallel)
+
+Eintrittsbedingung: Rust-Core ist Android-kompatibel compiliert (aarch64-linux-android Target via NDK).
+
+**Was neu gebaut wird (Jetpack Compose UI-Shell):**
+- Haupt-App mit In-App Command Palette
+- Custom IME (Input Method Editor) für systemweites Diktat
+- Foreground Service für zuverlässige Timer-Ausführung
+
+**Neue Platform-Adapter (Android-spezifisch):**
+- `IMEInputAdapter` (Android InputMethodService)
+- `AccessibilityServiceAdapter` (opt-in, für erweiterte Command-Mode-Features)
+- `QuickTileAdapter` (TileService)
+- `OverlayAdapter` (`TYPE_APPLICATION_OVERLAY`, für schwebende Palette)
+- `KeystoreAdapter` (Android Keystore)
+- `NotificationAdapter` (AlarmManager + `setExactAndAllowWhileIdle` + ForegroundService)
+
+**Funktionsumfang Android — realistisch:**
+- In-App Diktat und Command Mode: vollständig
+- Systemweites Diktat via IME: Nutzer aktiviert App als Standard-Tastatur; hohe UX-Hürde, klar kommuniziert
+- Quick Tile als Command-Trigger-Äquivalent
+- Accessibility Service: opt-in für erweiterte Features; Google Play Warnung wird im Onboarding erklärt
+- File Actions via Share Intent
+- Background-Timer via Foreground Service mit sichtbarer Notification (Android-Pflicht)
+
+---
+
+### Milestone 5 — Plugin SDK & Actions (parallel möglich ab Post-Desktop)
+
+Eintrittsbedingung: Tool Runtime (Modul 8) ist stabil und durch reale Nutzung erprobt. IPC-Protokoll ist dokumentiert.
+
+**Plugin Framework (Modul 9 aus Architektur-Planung):**
+- Öffentliche Plugin-Spezifikation: Manifest-Format, IPC-Protokoll, Permission-Modell
+- WASM-basierte Sandbox als primärer Ausführungskontext (portabel, sicher, kein Root-Risiko)
+- Plugin-Signing-Infrastruktur: Developer-Keys, Signing-Tool, Verifikation beim Laden
+- Mindestens 3 First-Party-Beispiel-Plugins (z. B. Kalender-Integration, Browser-Tab-Aktionen, Clipboard-History)
+- Plugin-Discovery-Interface in Settings (lokale Installation aus Datei, kein Store im ersten Schritt)
+
+**Plugin Store (spätere Sub-Phase):**
+- Trust-Modell definieren: wer darf publishen, wie wird reviewt
+- Sandboxing-Audit vor jeder Veröffentlichung
+- Kein Plugin Store ohne dieses Trust-Modell — kein wilder App Store ohne Governance
+
+---
+
+### Milestone 6 — Enterprise Gateway (nach Plugin SDK oder parallel)
+
+Eintrittsbedingung: Sensitive Mode ist stabil. BYOK-Infrastruktur ist erprobt.
+
+**Enterprise-spezifische Features:**
+- SSO / SAML / OIDC Integration für Team-Authentifizierung
+- Self-hosted LLM Endpoint-Konfiguration (Ollama, vLLM, Azure OpenAI, etc.) mit OAuth2-Support
+- MDM-Policy-Profile für macOS (Sensitive Mode erzwingen, Provider einschränken, Hotkeys festlegen)
+- Admin-Panel (Web-App, separates Projekt): Team-Verwaltung, Policy-Konfiguration, Nutzungs-Metriken (privacy-respektierend — keine Transcript-Inhalte, nur Nutzungszahlen)
+- Audit-Log-Export: strukturierte JSON-Logs aller Tool-Ausführungen, exportierbar für SIEM-Integration
+- Per-Tenant Rate Limiting und Feature Flags
+- On-Premise-Deploymentmodell des Admin-Panels (Docker-Compose als Einstieg)
+
+---
+
+### Meilenstein-Abhängigkeiten im Überblick
+
+- Milestone 1 (Stabilisierung) → Freigabe für alle weiteren
+- Milestone 2a (Windows) + 2b (Linux) → können parallel laufen wenn Team es erlaubt
+- Milestone 3 (On-device Modelle) → kann ab Milestone 1 parallel beginnen, da Core-Änderungen minimal
+- Milestone 4a (iOS) → benötigt stabilen Rust-Core und iOS-Cross-Compilation-Setup
+- Milestone 4b (Android) → kann parallel zu iOS, erfordert NDK-Setup
+- Milestone 5 (Plugin SDK) → benötigt stabile Tool-Runtime-Schnittstelle aus macOS-MVP
+- Milestone 6 (Enterprise) → benötigt stabile BYOK-Infrastruktur und Sensitive Mode
