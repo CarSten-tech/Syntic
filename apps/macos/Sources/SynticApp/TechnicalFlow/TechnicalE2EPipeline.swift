@@ -626,7 +626,10 @@ final class TechnicalE2EPipeline: ObservableObject {
                 confidencePercent: intentPayload.confidencePercent,
                 safetyDecision: safetyPayload.decision,
                 destructive: safetyPayload.destructive,
-                safetyReason: safetyPayload.reason
+                safetyReason: safetyPayload.reason,
+                moveDestinationHint: intentPayload.arguments?.moveDestination,
+                renameTargetHint: intentPayload.arguments?.renameTarget,
+                timerDurationHint: intentPayload.arguments?.timerDuration
             )
         )
 
@@ -685,7 +688,10 @@ final class TechnicalE2EPipeline: ObservableObject {
                             confidencePercent: invocation.confidencePercent,
                             safetyDecision: invocation.safetyDecision,
                             destructive: invocation.destructive,
-                            safetyReason: invocation.safetyReason
+                            safetyReason: invocation.safetyReason,
+                            moveDestinationHint: invocation.moveDestinationHint,
+                            renameTargetHint: invocation.renameTargetHint,
+                            timerDurationHint: invocation.timerDurationHint
                         )
                     )
                     let latencyMs = self.runningInvocationLatencyMs(for: invocation.id)
@@ -813,7 +819,10 @@ final class TechnicalE2EPipeline: ObservableObject {
                     queued_at_ms: $0.queuedAtMs,
                     intent_kind: $0.intentKind,
                     safety_decision: $0.safetyDecision,
-                    destructive: $0.destructive
+                    destructive: $0.destructive,
+                    move_destination_hint: $0.moveDestinationHint,
+                    rename_target_hint: $0.renameTargetHint,
+                    timer_duration_hint: $0.timerDurationHint
                 )
             },
             running: runningToolInvocationTasks.keys.sorted(),
@@ -989,6 +998,9 @@ private struct ToolInvocation {
     let safetyDecision: String
     let destructive: Bool
     let safetyReason: String
+    let moveDestinationHint: String?
+    let renameTargetHint: String?
+    let timerDurationHint: String?
 }
 
 private struct ToolRuntimeQueueSnapshot: Codable {
@@ -1007,6 +1019,9 @@ private struct ToolInvocationSnapshot: Codable {
     let intent_kind: String
     let safety_decision: String
     let destructive: Bool
+    let move_destination_hint: String?
+    let rename_target_hint: String?
+    let timer_duration_hint: String?
 }
 
 private struct DomainEventsPayload: Decodable {
@@ -1052,20 +1067,58 @@ private struct CommandIntentPayload: Decodable {
     let summary: String
     let confidencePercent: UInt8
     let requiresConfirmation: Bool
+    let arguments: CommandIntentArgumentsPayload?
 
     enum CodingKeys: String, CodingKey {
         case kind
         case summary
         case confidencePercent = "confidence_percent"
         case requiresConfirmation = "requires_confirmation"
+        case arguments
+    }
+
+    init(
+        kind: String,
+        summary: String,
+        confidencePercent: UInt8,
+        requiresConfirmation: Bool,
+        arguments: CommandIntentArgumentsPayload?
+    ) {
+        self.kind = kind
+        self.summary = summary
+        self.confidencePercent = confidencePercent
+        self.requiresConfirmation = requiresConfirmation
+        self.arguments = arguments
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        kind = try container.decodeIfPresent(String.self, forKey: .kind) ?? "unknown"
+        summary = try container.decodeIfPresent(String.self, forKey: .summary) ?? "Intent parse failed"
+        confidencePercent = try container.decodeIfPresent(UInt8.self, forKey: .confidencePercent) ?? 0
+        requiresConfirmation = try container.decodeIfPresent(Bool.self, forKey: .requiresConfirmation) ?? false
+        arguments = try container.decodeIfPresent(CommandIntentArgumentsPayload.self, forKey: .arguments)
     }
 
     static let unknown = CommandIntentPayload(
         kind: "unknown",
         summary: "Intent parse failed",
         confidencePercent: 0,
-        requiresConfirmation: false
+        requiresConfirmation: false,
+        arguments: nil
     )
+}
+
+private struct CommandIntentArgumentsPayload: Decodable {
+    let moveDestination: String?
+    let renameTarget: String?
+    let timerDuration: String?
+
+    enum CodingKeys: String, CodingKey {
+        case moveDestination = "move_destination"
+        case renameTarget = "rename_target"
+        case timerDuration = "timer_duration"
+    }
 }
 
 private struct CommandSafetyPayload: Decodable {

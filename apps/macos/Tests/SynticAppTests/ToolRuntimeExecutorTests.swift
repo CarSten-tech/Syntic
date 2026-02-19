@@ -141,7 +141,10 @@ final class ToolRuntimeExecutorTests: XCTestCase {
             confidencePercent: 80,
             safetyDecision: "require_confirmation",
             destructive: intentKind == "move_file" || intentKind == "rename_file",
-            safetyReason: "explicit_user_confirmation_required"
+            safetyReason: "explicit_user_confirmation_required",
+            moveDestinationHint: nil,
+            renameTargetHint: nil,
+            timerDurationHint: nil
         )
     }
 

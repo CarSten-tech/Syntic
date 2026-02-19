@@ -138,12 +138,28 @@ fn dictation_snapshot_json(runtime: &CoreRuntime) -> String {
 
 fn command_intent_json(utterance: &str) -> String {
     let intent = fallback_classify(utterance);
+    let move_destination_json = intent.arguments.move_destination.as_deref().map_or_else(
+        || "null".to_owned(),
+        |value| format!("\"{}\"", json_escape(value)),
+    );
+    let rename_target_json = intent.arguments.rename_target.as_deref().map_or_else(
+        || "null".to_owned(),
+        |value| format!("\"{}\"", json_escape(value)),
+    );
+    let timer_duration_json = intent.arguments.timer_duration.as_deref().map_or_else(
+        || "null".to_owned(),
+        |value| format!("\"{}\"", json_escape(value)),
+    );
+
     format!(
-        "{{\"kind\":\"{}\",\"summary\":\"{}\",\"confidence_percent\":{},\"requires_confirmation\":{}}}",
+        "{{\"kind\":\"{}\",\"summary\":\"{}\",\"confidence_percent\":{},\"requires_confirmation\":{},\"arguments\":{{\"move_destination\":{},\"rename_target\":{},\"timer_duration\":{}}}}}",
         intent.kind.as_str(),
         json_escape(&intent.summary),
         intent.confidence_percent,
-        intent.requires_confirmation
+        intent.requires_confirmation,
+        move_destination_json,
+        rename_target_json,
+        timer_duration_json
     )
 }
 
@@ -965,6 +981,7 @@ mod tests {
         let payload = unsafe { CStr::from_ptr(payload_pointer) };
         let payload_text = payload.to_str().expect("utf8");
         assert!(payload_text.contains("\"kind\":\"set_timer\""));
+        assert!(payload_text.contains("\"timer_duration\":\"20min\""));
 
         // SAFETY: `payload_pointer` came from `syntic_command_classify_json`.
         unsafe { syntic_string_free(payload_pointer) };

@@ -10,6 +10,9 @@ struct ToolExecutionPlan {
     let safetyDecision: String
     let destructive: Bool
     let safetyReason: String
+    let moveDestinationHint: String?
+    let renameTargetHint: String?
+    let timerDurationHint: String?
 }
 
 enum ToolExecutionOutcome: String {
@@ -146,7 +149,11 @@ final class FileBackedToolExecutor: ToolExecuting {
     }
 
     private func executeMoveFile(plan: ToolExecutionPlan) throws -> ToolExecutionResult {
-        guard let destinationURL = parsedDestinationDirectoryURL(from: plan.transcript) else {
+        let destinationHint = sanitizeToken(plan.moveDestinationHint ?? "")
+        let transcriptHint = parsedDestinationTokenFromTranscript(plan.transcript) ?? ""
+        let destinationToken = destinationHint.isEmpty ? transcriptHint : destinationHint
+
+        guard let destinationURL = destinationDirectoryURL(from: destinationToken) else {
             return ToolExecutionResult(
                 outcome: .rejected,
                 detail: "Move rejected: destination path missing or unsupported.",
@@ -199,10 +206,22 @@ final class FileBackedToolExecutor: ToolExecuting {
     }
 
     private func executeRenameFile(plan: ToolExecutionPlan) throws -> ToolExecutionResult {
-        guard let newName = parsedRenameTarget(from: plan.transcript) else {
+        let renameHint = sanitizeToken(plan.renameTargetHint ?? "")
+        let transcriptHint = parsedRenameTargetFromTranscript(plan.transcript) ?? ""
+        let newName = renameHint.isEmpty ? transcriptHint : renameHint
+
+        guard !newName.isEmpty else {
             return ToolExecutionResult(
                 outcome: .rejected,
                 detail: "Rename rejected: target name missing or invalid.",
+                artifactPath: nil
+            )
+        }
+
+        if newName.contains("/") || newName.contains(":") {
+            return ToolExecutionResult(
+                outcome: .rejected,
+                detail: "Rename rejected: target name contains invalid path characters.",
                 artifactPath: nil
             )
         }
@@ -284,16 +303,19 @@ final class FileBackedToolExecutor: ToolExecuting {
         return .success(selectedURLs)
     }
 
-    private func parsedDestinationDirectoryURL(from transcript: String) -> URL? {
+    private func parsedDestinationTokenFromTranscript(_ transcript: String) -> String? {
         guard let tail = capturedTail(afterAnyOf: [" to ", " nach "], in: transcript) else {
             return nil
         }
 
         let destinationToken = sanitizeToken(tail)
+        return destinationToken.isEmpty ? nil : destinationToken
+    }
+
+    private func destinationDirectoryURL(from destinationToken: String) -> URL? {
         guard !destinationToken.isEmpty else {
             return nil
         }
-
         switch destinationToken.lowercased() {
         case "desktop":
             return fileManager.urls(for: .desktopDirectory, in: .userDomainMask).first
@@ -310,20 +332,13 @@ final class FileBackedToolExecutor: ToolExecuting {
         }
     }
 
-    private func parsedRenameTarget(from transcript: String) -> String? {
+    private func parsedRenameTargetFromTranscript(_ transcript: String) -> String? {
         guard let tail = capturedTail(afterAnyOf: [" to ", " zu ", " als "], in: transcript) else {
             return nil
         }
 
         let candidate = sanitizeToken(tail)
-        guard !candidate.isEmpty else {
-            return nil
-        }
-
-        if candidate.contains("/") || candidate.contains(":") {
-            return nil
-        }
-        return candidate
+        return candidate.isEmpty ? nil : candidate
     }
 
     private func capturedTail(afterAnyOf markers: [String], in text: String) -> String? {

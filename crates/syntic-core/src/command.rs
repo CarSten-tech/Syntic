@@ -30,6 +30,15 @@ pub struct CommandIntent {
     pub summary: String,
     pub confidence_percent: u8,
     pub requires_confirmation: bool,
+    pub arguments: CommandIntentArguments,
+}
+
+/// Optional structured arguments extracted from utterance.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct CommandIntentArguments {
+    pub move_destination: Option<String>,
+    pub rename_target: Option<String>,
+    pub timer_duration: Option<String>,
 }
 
 impl CommandIntent {
@@ -40,6 +49,7 @@ impl CommandIntent {
             summary: "Kein unterstützter Intent erkannt".to_owned(),
             confidence_percent: 0,
             requires_confirmation: false,
+            arguments: CommandIntentArguments::default(),
         }
     }
 }
@@ -86,6 +96,11 @@ pub fn fallback_classify(utterance: &str) -> CommandIntent {
             summary,
             confidence_percent: 68,
             requires_confirmation: true,
+            arguments: CommandIntentArguments {
+                move_destination: None,
+                rename_target: None,
+                timer_duration: extract_timer_duration_token(utterance),
+            },
         };
     }
 
@@ -95,6 +110,7 @@ pub fn fallback_classify(utterance: &str) -> CommandIntent {
             summary: "Notiz speichern".to_owned(),
             confidence_percent: 63,
             requires_confirmation: true,
+            arguments: CommandIntentArguments::default(),
         };
     }
 
@@ -107,6 +123,11 @@ pub fn fallback_classify(utterance: &str) -> CommandIntent {
             summary: "Datei(en) verschieben".to_owned(),
             confidence_percent: 58,
             requires_confirmation: true,
+            arguments: CommandIntentArguments {
+                move_destination: extract_move_destination(utterance),
+                rename_target: None,
+                timer_duration: None,
+            },
         };
     }
 
@@ -119,6 +140,11 @@ pub fn fallback_classify(utterance: &str) -> CommandIntent {
             summary: "Datei/Ordner umbenennen".to_owned(),
             confidence_percent: 58,
             requires_confirmation: true,
+            arguments: CommandIntentArguments {
+                move_destination: None,
+                rename_target: extract_rename_target(utterance),
+                timer_duration: None,
+            },
         };
     }
 
@@ -170,6 +196,94 @@ fn extract_timer_summary(utterance: &str) -> String {
     "Timer setzen".to_owned()
 }
 
+fn extract_timer_duration_token(utterance: &str) -> Option<String> {
+    let normalized = utterance.trim().to_lowercase();
+    if normalized.is_empty() {
+        return None;
+    }
+
+    if let Some(duration_token) = normalized.split_whitespace().find(|token| {
+        token.chars().any(|ch| ch.is_ascii_digit())
+            && token.chars().any(|ch| ch.is_ascii_alphabetic())
+    }) {
+        return Some(duration_token.to_owned());
+    }
+
+    normalized
+        .split_whitespace()
+        .find(|token| token.chars().all(|ch| ch.is_ascii_digit()))
+        .map(|token| format!("{token}min"))
+}
+
+fn extract_move_destination(utterance: &str) -> Option<String> {
+    let normalized = utterance.trim().to_lowercase();
+    if normalized.is_empty() {
+        return None;
+    }
+
+    if let Some(value) = extract_tail_after_markers(&normalized, &[" to ", " nach "]) {
+        return sanitize_argument_token(&value);
+    }
+
+    if normalized.contains("desktop") {
+        return Some("desktop".to_owned());
+    }
+    if normalized.contains("documents") || normalized.contains("dokumente") {
+        return Some("documents".to_owned());
+    }
+    if normalized.contains("downloads") {
+        return Some("downloads".to_owned());
+    }
+    None
+}
+
+fn extract_rename_target(utterance: &str) -> Option<String> {
+    let normalized = utterance.trim().to_lowercase();
+    if normalized.is_empty() {
+        return None;
+    }
+
+    if let Some(value) = extract_tail_after_markers(
+        &normalized,
+        &[" new name ", " neuer name ", " to ", " zu ", " als "],
+    ) {
+        return sanitize_argument_token(&value);
+    }
+
+    None
+}
+
+fn extract_tail_after_markers(normalized: &str, markers: &[&str]) -> Option<String> {
+    for marker in markers {
+        if let Some((_, tail)) = normalized.rsplit_once(marker) {
+            let trimmed = tail.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_owned());
+            }
+        }
+    }
+    None
+}
+
+fn sanitize_argument_token(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let without_quotes = trimmed
+        .trim_matches('"')
+        .trim_matches('\'')
+        .trim_end_matches(['.', ',', ';', ':'])
+        .trim();
+
+    if without_quotes.is_empty() {
+        return None;
+    }
+
+    Some(without_quotes.to_owned())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{CommandIntentKind, SafetyDecisionKind, evaluate_safety, fallback_classify};
@@ -206,7 +320,18 @@ mod tests {
         let decision = evaluate_safety(&intent);
 
         assert_eq!(intent.kind, CommandIntentKind::MoveFile);
+        assert_eq!(
+            intent.arguments.move_destination.as_deref(),
+            Some("archive")
+        );
         assert_eq!(decision.decision, SafetyDecisionKind::RequireConfirmation);
         assert!(decision.destructive);
+    }
+
+    #[test]
+    fn rename_target_argument_is_extracted() {
+        let intent = fallback_classify("rename file report to final");
+        assert_eq!(intent.kind, CommandIntentKind::RenameFile);
+        assert_eq!(intent.arguments.rename_target.as_deref(), Some("final"));
     }
 }
