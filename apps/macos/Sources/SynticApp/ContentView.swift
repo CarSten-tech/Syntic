@@ -44,6 +44,21 @@ struct ContentView: View {
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
 
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(hotkeySignalColor)
+                    .frame(width: 10, height: 10)
+                Text("Live Hotkey: \(technicalE2EPipeline.hotkeySignalMessage)")
+                    .font(.subheadline.weight(.semibold))
+                    .lineLimit(2)
+            }
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 10)
+                    .fill(Color.white.opacity(0.12))
+            )
+
             Divider()
 
             Text("Core-Version: \(coreBridge.coreVersion())")
@@ -299,5 +314,18 @@ struct ContentView: View {
         let snapshot = finderContextAdapter.currentSelectionSnapshot()
         finderSnapshotSummary =
             "status=\(snapshot.status.rawValue), running=\(snapshot.finderRunning), frontmost=\(snapshot.finderFrontmost), selected=\(snapshot.selectedPaths.count)"
+    }
+
+    private var hotkeySignalColor: Color {
+        switch technicalE2EPipeline.hotkeySignalKind {
+        case "start":
+            return .green
+        case "stop":
+            return .orange
+        case "ignored":
+            return .red
+        default:
+            return .gray
+        }
     }
 }

@@ -635,7 +635,7 @@ private final class NoopHotkeyAdapter: HotkeyListening {
         "Option+Space / Option+Backspace"
     }
 
-    func startListening(onTrigger: @escaping () -> Void) -> HotkeyListenerStartResult {
+    func startListening(onTrigger: @escaping (String) -> Void) -> HotkeyListenerStartResult {
         _ = onTrigger
         isListening = true
         return HotkeyListenerStartResult(

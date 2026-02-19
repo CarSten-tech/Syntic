@@ -7,6 +7,8 @@ final class TechnicalE2EPipeline: ObservableObject {
     @Published private(set) var isHotkeyListening = false
     @Published private(set) var hotkeyDefinition = "-"
     @Published private(set) var hotkeyStatusSummary = "not_started"
+    @Published private(set) var hotkeySignalMessage = "Noch kein Hotkey erkannt."
+    @Published private(set) var hotkeySignalKind = "idle"
     @Published private(set) var latestAudioLevel: Float = 0
     @Published private(set) var latestRouteJSON = "{}"
     @Published private(set) var latestTranscript = ""
@@ -57,6 +59,7 @@ final class TechnicalE2EPipeline: ObservableObject {
     private var domainEventWindow: [DomainEventEnvelope] = []
     private var toolSignalWindow: [ToolRuntimeSignalEnvelope] = []
     private var sessionHistoryWindow: [CoreSessionHistoryRecordEnvelope] = []
+    private var hotkeySignalResetTask: Task<Void, Never>?
 
     init(
         coreBridge: SynticCoreVersionProviding,
@@ -109,6 +112,7 @@ final class TechnicalE2EPipeline: ObservableObject {
     }
 
     deinit {
+        hotkeySignalResetTask?.cancel()
         for task in runningToolInvocationTasks.values {
             task.cancel()
         }
@@ -150,9 +154,9 @@ final class TechnicalE2EPipeline: ObservableObject {
             return
         }
 
-        let startResult = hotkeyAdapter.startListening { [weak self] in
+        let startResult = hotkeyAdapter.startListening { [weak self] hotkeyLabel in
             Task { @MainActor [weak self] in
-                self?.handleHotkeyTrigger(source: "hotkey")
+                self?.handleHotkeyTrigger(source: "hotkey", hotkeyLabel: hotkeyLabel)
             }
         }
 
@@ -180,7 +184,7 @@ final class TechnicalE2EPipeline: ObservableObject {
     }
 
     func triggerHotkeyAction() {
-        handleHotkeyTrigger(source: "manual")
+        handleHotkeyTrigger(source: "manual", hotkeyLabel: "Manual Trigger")
     }
 
     func confirmReview() {
@@ -341,32 +345,37 @@ final class TechnicalE2EPipeline: ObservableObject {
         appendLog("Undo restored confirmed transcript into review state.")
     }
 
-    private func handleHotkeyTrigger(source: String) {
+    private func handleHotkeyTrigger(source: String, hotkeyLabel: String?) {
+        let triggerLabel = hotkeyLabel ?? source
         if isStartingCapture {
+            markHotkeySignal(kind: "ignored", message: "\(triggerLabel): ignoriert (Start laeuft)")
             emitTelemetry(
                 category: "hotkey",
                 action: "trigger_ignored",
                 status: "degraded",
-                context: ["source": source, "reason": "capture_start_in_progress"]
+                context: ["source": source, "label": triggerLabel, "reason": "capture_start_in_progress"]
             )
             appendLog("Trigger (\(source)) ignored while capture start is in progress.")
             return
         }
 
         if isTranscribing {
+            markHotkeySignal(kind: "ignored", message: "\(triggerLabel): ignoriert (Transkription laeuft)")
             emitTelemetry(
                 category: "hotkey",
                 action: "trigger_ignored",
                 status: "degraded",
-                context: ["source": source, "reason": "transcribing_in_progress"]
+                context: ["source": source, "label": triggerLabel, "reason": "transcribing_in_progress"]
             )
             appendLog("Trigger (\(source)) ignored while transcribing.")
             return
         }
 
         if phase == "listening" {
+            markHotkeySignal(kind: "stop", message: "\(triggerLabel): STOP")
             stopListeningAndTranscribe(triggerSource: source)
         } else {
+            markHotkeySignal(kind: "start", message: "\(triggerLabel): START")
             startListening(triggerSource: source)
         }
     }
@@ -1370,6 +1379,26 @@ final class TechnicalE2EPipeline: ObservableObject {
 
     private static func nowMs() -> UInt64 {
         UInt64(Date().timeIntervalSince1970 * 1_000)
+    }
+
+    private func markHotkeySignal(kind: String, message: String) {
+        hotkeySignalResetTask?.cancel()
+        hotkeySignalKind = kind
+        hotkeySignalMessage = "\(Self.signalTimestampString()) - \(message)"
+        hotkeySignalResetTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            guard let self, !Task.isCancelled else {
+                return
+            }
+            self.hotkeySignalKind = "idle"
+        }
+    }
+
+    private static func signalTimestampString() -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "de_DE")
+        formatter.dateFormat = "HH:mm:ss"
+        return formatter.string(from: Date())
     }
 
     private var ownBundleIdentifier: String? {

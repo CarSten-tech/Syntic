@@ -1,5 +1,6 @@
 import AppKit
 import ApplicationServices
+import Carbon.HIToolbox
 import Foundation
 
 struct HotkeyDefinition {
@@ -41,16 +42,19 @@ struct HotkeyListenerStartResult {
 protocol HotkeyListening: AnyObject {
     var isListening: Bool { get }
     var supportedHotkeysDescription: String { get }
-    func startListening(onTrigger: @escaping () -> Void) -> HotkeyListenerStartResult
+    func startListening(onTrigger: @escaping (String) -> Void) -> HotkeyListenerStartResult
     func stopListening()
 }
 
 final class MacOSGlobalHotkeyAdapter: HotkeyListening {
+    private static let signature: OSType = 0x5359_4E54 // "SYNT"
+
     private let hotkeys: [HotkeyDefinition]
 
-    private var globalMonitor: Any?
-    private var localMonitor: Any?
-    private var trigger: (() -> Void)?
+    private var eventHandlerRef: EventHandlerRef?
+    private var registeredHotkeyRefs: [UInt32: EventHotKeyRef] = [:]
+    private var hotkeyLabelsByID: [UInt32: String] = [:]
+    private var trigger: ((String) -> Void)?
     private var hasPromptedAccessibilityPermission = false
 
     init(hotkeys: [HotkeyDefinition] = [.optionSpace, .optionDelete]) {
@@ -58,30 +62,25 @@ final class MacOSGlobalHotkeyAdapter: HotkeyListening {
     }
 
     var isListening: Bool {
-        globalMonitor != nil || localMonitor != nil
+        !registeredHotkeyRefs.isEmpty
     }
 
     var supportedHotkeysDescription: String {
         hotkeys.map(\.label).joined(separator: " / ")
     }
 
-    func startListening(onTrigger: @escaping () -> Void) -> HotkeyListenerStartResult {
+    func startListening(onTrigger: @escaping (String) -> Void) -> HotkeyListenerStartResult {
         stopListening()
 
         let permissionResult = promptAccessibilityPermissionIfNeeded()
         trigger = onTrigger
-
-        globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            self?.handle(event: event)
+        let installStatus = installHotkeyEventHandlerIfNeeded()
+        if installStatus == noErr {
+            registerConfiguredHotkeys()
         }
 
-        localMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            self?.handle(event: event)
-            return event
-        }
-
-        let hasGlobalMonitor = globalMonitor != nil
-        let hasLocalMonitor = localMonitor != nil
+        let hasGlobalMonitor = !registeredHotkeyRefs.isEmpty
+        let hasLocalMonitor = false
         return HotkeyListenerStartResult(
             started: hasGlobalMonitor || hasLocalMonitor,
             hasGlobalMonitor: hasGlobalMonitor,
@@ -93,35 +92,108 @@ final class MacOSGlobalHotkeyAdapter: HotkeyListening {
     }
 
     func stopListening() {
-        if let globalMonitor {
-            NSEvent.removeMonitor(globalMonitor)
-            self.globalMonitor = nil
+        for hotkeyRef in registeredHotkeyRefs.values {
+            UnregisterEventHotKey(hotkeyRef)
         }
+        registeredHotkeyRefs.removeAll()
+        hotkeyLabelsByID.removeAll()
 
-        if let localMonitor {
-            NSEvent.removeMonitor(localMonitor)
-            self.localMonitor = nil
+        if let eventHandlerRef {
+            RemoveEventHandler(eventHandlerRef)
+            self.eventHandlerRef = nil
         }
-
         trigger = nil
     }
 
-    private func handle(event: NSEvent) {
-        guard !event.isARepeat else {
-            return
+    private func installHotkeyEventHandlerIfNeeded() -> OSStatus {
+        guard eventHandlerRef == nil else {
+            return noErr
         }
 
-        guard matches(event: event) else {
-            return
+        var eventType = EventTypeSpec(
+            eventClass: OSType(kEventClassKeyboard),
+            eventKind: UInt32(kEventHotKeyPressed)
+        )
+
+        let callback: EventHandlerUPP = { _, event, userData in
+            guard let event, let userData else {
+                return OSStatus(eventNotHandledErr)
+            }
+            let adapter = Unmanaged<MacOSGlobalHotkeyAdapter>.fromOpaque(userData).takeUnretainedValue()
+            return adapter.handleHotkeyEvent(event)
         }
 
-        trigger?()
+        return InstallEventHandler(
+            GetApplicationEventTarget(),
+            callback,
+            1,
+            &eventType,
+            UnsafeMutableRawPointer(Unmanaged.passUnretained(self).toOpaque()),
+            &eventHandlerRef
+        )
     }
 
-    private func matches(event: NSEvent) -> Bool {
-        hotkeys.contains { hotkey in
-            hotkey.matches(event: event)
+    private func registerConfiguredHotkeys() {
+        for (index, hotkey) in hotkeys.enumerated() {
+            let hotkeyID = UInt32(index + 1)
+            let eventHotkeyID = EventHotKeyID(signature: Self.signature, id: hotkeyID)
+            var hotkeyRef: EventHotKeyRef?
+            let status = RegisterEventHotKey(
+                UInt32(hotkey.keyCode),
+                carbonModifiers(from: hotkey.modifiers),
+                eventHotkeyID,
+                GetApplicationEventTarget(),
+                0,
+                &hotkeyRef
+            )
+
+            guard status == noErr, let hotkeyRef else {
+                continue
+            }
+
+            registeredHotkeyRefs[hotkeyID] = hotkeyRef
+            hotkeyLabelsByID[hotkeyID] = hotkey.label
         }
+    }
+
+    private func handleHotkeyEvent(_ event: EventRef) -> OSStatus {
+        var hotkeyID = EventHotKeyID()
+        let status = GetEventParameter(
+            event,
+            EventParamName(kEventParamDirectObject),
+            EventParamType(typeEventHotKeyID),
+            nil,
+            MemoryLayout<EventHotKeyID>.size,
+            nil,
+            &hotkeyID
+        )
+
+        guard status == noErr else {
+            return status
+        }
+        guard let hotkeyLabel = hotkeyLabelsByID[hotkeyID.id] else {
+            return noErr
+        }
+
+        trigger?(hotkeyLabel)
+        return noErr
+    }
+
+    private func carbonModifiers(from flags: NSEvent.ModifierFlags) -> UInt32 {
+        var modifiers: UInt32 = 0
+        if flags.contains(.command) {
+            modifiers |= UInt32(cmdKey)
+        }
+        if flags.contains(.control) {
+            modifiers |= UInt32(controlKey)
+        }
+        if flags.contains(.option) {
+            modifiers |= UInt32(optionKey)
+        }
+        if flags.contains(.shift) {
+            modifiers |= UInt32(shiftKey)
+        }
+        return modifiers
     }
 
     private func promptAccessibilityPermissionIfNeeded() -> (accessibilityTrusted: Bool, promptedAccessibility: Bool) {
