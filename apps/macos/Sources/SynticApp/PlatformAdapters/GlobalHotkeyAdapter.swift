@@ -1,4 +1,5 @@
 import AppKit
+import ApplicationServices
 import Foundation
 
 struct HotkeyDefinition {
@@ -20,6 +21,7 @@ final class MacOSGlobalHotkeyAdapter: HotkeyListening {
     private var globalMonitor: Any?
     private var localMonitor: Any?
     private var trigger: (() -> Void)?
+    private var hasPromptedAccessibilityPermission = false
 
     init(hotkey: HotkeyDefinition = .optionSpace) {
         self.hotkey = hotkey
@@ -32,6 +34,7 @@ final class MacOSGlobalHotkeyAdapter: HotkeyListening {
     func startListening(onTrigger: @escaping () -> Void) {
         stopListening()
 
+        promptAccessibilityPermissionIfNeeded()
         trigger = onTrigger
 
         globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
@@ -73,5 +76,18 @@ final class MacOSGlobalHotkeyAdapter: HotkeyListening {
 
         let relevantModifiers = event.modifierFlags.intersection([.shift, .control, .option, .command])
         return relevantModifiers == hotkey.modifiers
+    }
+
+    private func promptAccessibilityPermissionIfNeeded() {
+        guard !AXIsProcessTrusted() else {
+            return
+        }
+        guard !hasPromptedAccessibilityPermission else {
+            return
+        }
+
+        hasPromptedAccessibilityPermission = true
+        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
+        _ = AXIsProcessTrustedWithOptions(options)
     }
 }

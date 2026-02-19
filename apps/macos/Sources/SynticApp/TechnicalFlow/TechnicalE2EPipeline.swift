@@ -99,6 +99,7 @@ final class TechnicalE2EPipeline: ObservableObject {
                 "settings_sensitive_mode": settingsController.sensitiveModeEnabled ? "true" : "false",
             ]
         )
+        startHotkeyListenerIfNeeded(startSource: "auto_init")
         appendLog("Technical E2E pipeline initialized.")
     }
 
@@ -135,6 +136,14 @@ final class TechnicalE2EPipeline: ObservableObject {
             return
         }
 
+        startHotkeyListenerIfNeeded(startSource: "manual_toggle")
+    }
+
+    private func startHotkeyListenerIfNeeded(startSource: String) {
+        guard !isHotkeyListening else {
+            return
+        }
+
         hotkeyAdapter.startListening { [weak self] in
             Task { @MainActor [weak self] in
                 self?.handleHotkeyTrigger(source: "hotkey")
@@ -142,8 +151,16 @@ final class TechnicalE2EPipeline: ObservableObject {
         }
 
         isHotkeyListening = true
-        emitTelemetry(category: "hotkey", action: "listener_started", status: "ok", context: ["definition": "option_space"])
-        appendLog("Hotkey listener started (Option+Space).")
+        emitTelemetry(
+            category: "hotkey",
+            action: "listener_started",
+            status: "ok",
+            context: [
+                "definition": "option_space",
+                "start_source": startSource,
+            ]
+        )
+        appendLog("Hotkey listener started (Option+Space), source=\(startSource).")
     }
 
     func triggerHotkeyAction() {
