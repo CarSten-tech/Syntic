@@ -35,6 +35,12 @@ uint8_t syntic_core_event_report_permission(const char *source,
                                             const char *permission,
                                             const char *status,
                                             const char *detail);
+uint8_t syntic_core_event_report_telemetry(const char *source,
+                                           const char *category,
+                                           const char *action,
+                                           const char *status,
+                                           const char *context_json,
+                                           uint32_t value_ms);
 uint8_t syntic_core_events_clear(void);
 uint8_t syntic_dictation_reset(void);
 uint8_t syntic_dictation_start(void);

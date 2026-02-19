@@ -43,13 +43,22 @@ Abgrenzen, welche Kernbausteine vor der ersten echten Produkt-UI/UX technisch st
   - In-memory Event-Journal im Core (Ring-Buffer)
   - FFI-Endpunkte für Event-Report und Event-Feed
   - macOS-Pipeline meldet Permission-/Fehlerzustände an Core-Events
+- E2E-Telemetrie als strukturierte Events/Logs:
+  - Core-Telemetry-Events (`category/action/status/context/value_ms`)
+  - NDJSON-Log unter `Application Support/Syntic/logs/e2e-telemetry.ndjson`
+- Signing/Notarization-Grundlage für macOS:
+  - Packaging-Profil (`Info.plist` + Entitlements)
+  - Release-Runner (`scripts/release/macos-package-sign-notarize.sh`)
+  - Erweiterter Spike-04 Preflight mit Fail-fast Checks
 - Build- und Testkette (Rust + macOS Swift Build) grün.
 
 ## Noch vor erster Produkt-UI nötig
 
 - E2E-Technikfluss erweitern:
   - Review Cancel in Domain-Events ausleitbar machen
-- Entitlements/Signing-Blocker aus Spike 4 auflösen.
+- Entitlements/Signing operativ schließen:
+  - Team-/Issuer-Credentials und CI-Secrets bereitstellen
+  - ersten erfolgreichen Notarization-Run dokumentieren
 
 ## Bewusst noch nicht begonnen
 
@@ -58,7 +67,7 @@ Abgrenzen, welche Kernbausteine vor der ersten echten Produkt-UI/UX technisch st
 
 ## Nächster technischer Fokus
 
-1. Entitlements/Signing-Blocker aus Spike 4 auflösen.
-2. E2E-Telemetrie aus Debug-UI in strukturierte Logs/Events überführen.
-3. Persistenz für Session-Daten (History/Undo) mit Migrationspfad einführen.
-4. Review Cancel als Domain-Event-Kette bis Tool Runtime verdrahten.
+1. Entitlements/Signing operativ abschließen (Credentials + erster grüner Notarization-Lauf).
+2. Persistenz für Session-Daten (History/Undo) mit Migrationspfad einführen.
+3. Review Cancel als Domain-Event-Kette bis Tool Runtime verdrahten.
+4. Event-Feed konsumierend in Produkt-UI statt Debug-Textprojektion.

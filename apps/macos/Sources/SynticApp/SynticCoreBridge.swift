@@ -24,6 +24,14 @@ protocol SynticCoreVersionProviding {
         status: String,
         detail: String
     ) -> UInt8
+    func reportCoreTelemetryEvent(
+        source: String,
+        category: String,
+        action: String,
+        status: String,
+        contextJSON: String,
+        valueMs: UInt32
+    ) -> UInt8
     func sttRouteJSON(
         preferenceMode: UInt8,
         sensitiveModeEnabled: Bool,
@@ -144,6 +152,34 @@ struct SynticCoreBridge: SynticCoreVersionProviding {
                             statusPointer,
                             detailPointer
                         )
+                    }
+                }
+            }
+        }
+    }
+
+    func reportCoreTelemetryEvent(
+        source: String,
+        category: String,
+        action: String,
+        status: String,
+        contextJSON: String,
+        valueMs: UInt32
+    ) -> UInt8 {
+        source.withCString { sourcePointer in
+            category.withCString { categoryPointer in
+                action.withCString { actionPointer in
+                    status.withCString { statusPointer in
+                        contextJSON.withCString { contextPointer in
+                            syntic_core_event_report_telemetry(
+                                sourcePointer,
+                                categoryPointer,
+                                actionPointer,
+                                statusPointer,
+                                contextPointer,
+                                valueMs
+                            )
+                        }
                     }
                 }
             }

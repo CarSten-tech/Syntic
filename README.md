@@ -38,10 +38,15 @@ swift build --package-path apps/macos
 
 # Spike 4 Notarization Preflight
 ./scripts/spikes/spike-04-notarization-preflight.sh
+
+# Dry-run packaging + signing (ohne Notarization)
+export CODESIGN_IDENTITY="Developer ID Application: YOUR NAME (TEAMID)"
+export SKIP_NOTARIZATION=1
+./scripts/release/macos-package-sign-notarize.sh
 ```
 
 ## Nächste Schritte
 
-1. FFI im Release-Profil testen: `./scripts/build-ffi.sh release`.
-2. Erste End-to-End Verbindung: SwiftUI Menu-Bar -> Rust FFI-Call -> UI-Ausgabe.
-3. Spikes 1-4 aus `docs/architecture/voice-app-plan.md` durchführen.
+1. Signing/Notarization-Runbook nutzen: `docs/release/macos-signing-notarization.md`.
+2. FFI im Release-Profil testen: `./scripts/build-ffi.sh release`.
+3. Spikes 1-4 aus `docs/architecture/voice-app-plan.md` fortlaufend schließen.

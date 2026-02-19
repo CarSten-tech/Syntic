@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!--
+    Baseline profile for Developer-ID distribution with hardened runtime.
+    Keep this empty unless a concrete notarization failure requires exceptions.
+  -->
+</dict>
+</plist>

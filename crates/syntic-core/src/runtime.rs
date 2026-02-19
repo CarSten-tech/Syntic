@@ -61,6 +61,19 @@ impl CoreRuntime {
             .record_permission(source, permission, status, detail);
     }
 
+    pub fn record_telemetry_event(
+        &mut self,
+        source: &str,
+        category: &str,
+        action: &str,
+        status: &str,
+        context_json: &str,
+        value_ms: Option<u32>,
+    ) {
+        self.core_events
+            .record_telemetry(source, category, action, status, context_json, value_ms);
+    }
+
     pub fn clear_core_events(&mut self) {
         self.core_events.clear();
     }
@@ -103,7 +116,37 @@ mod tests {
 
         match &events[0].payload {
             CoreEventPayload::Error { code, .. } => assert_eq!(code, "audio_failed"),
-            CoreEventPayload::Permission { .. } => panic!("expected error payload"),
+            CoreEventPayload::Permission { .. } | CoreEventPayload::Telemetry { .. } => {
+                panic!("expected error payload")
+            }
+        }
+    }
+
+    #[test]
+    fn runtime_exposes_telemetry_events() {
+        let mut runtime = CoreRuntime::new();
+        runtime.record_telemetry_event(
+            "core.test",
+            "e2e",
+            "phase_changed",
+            "ok",
+            "{\"phase\":\"listening\"}",
+            Some(55),
+        );
+
+        let events = runtime.core_events_since(0, 10);
+        assert_eq!(events.len(), 1);
+
+        match &events[0].payload {
+            CoreEventPayload::Telemetry {
+                category, action, ..
+            } => {
+                assert_eq!(category, "e2e");
+                assert_eq!(action, "phase_changed");
+            }
+            CoreEventPayload::Error { .. } | CoreEventPayload::Permission { .. } => {
+                panic!("expected telemetry payload")
+            }
         }
     }
 }

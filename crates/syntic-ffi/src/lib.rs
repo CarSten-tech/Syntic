@@ -200,6 +200,30 @@ fn core_event_json(event: &CoreEvent) -> String {
             json_escape(status),
             json_escape(detail)
         ),
+        CoreEventPayload::Telemetry {
+            category,
+            action,
+            status,
+            context_json,
+            value_ms,
+        } => {
+            let value_ms_json = value_ms
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".to_owned());
+            format!(
+                "{{\"id\":{},\"timestamp_ms\":{},\"kind\":\"{}\",\"severity\":\"{}\",\"source\":\"{}\",\"category\":\"{}\",\"action\":\"{}\",\"status\":\"{}\",\"context_json\":\"{}\",\"value_ms\":{}}}",
+                event.id,
+                event.timestamp_ms,
+                event.kind.as_str(),
+                event.severity.as_str(),
+                json_escape(&event.source),
+                json_escape(category),
+                json_escape(action),
+                json_escape(status),
+                json_escape(context_json),
+                value_ms_json
+            )
+        }
     }
 }
 
@@ -382,6 +406,56 @@ pub extern "C" fn syntic_core_event_report_permission(
     FfiStatusCode::Success as u8
 }
 
+/// Emits a telemetry event into the core event journal.
+///
+/// `context_json` is optional and may be null.
+///
+/// Returns a numeric FFI status code.
+#[unsafe(no_mangle)]
+pub extern "C" fn syntic_core_event_report_telemetry(
+    source: *const c_char,
+    category: *const c_char,
+    action: *const c_char,
+    status: *const c_char,
+    context_json: *const c_char,
+    value_ms: u32,
+) -> u8 {
+    let source = match parse_utf8_input(source) {
+        Ok(value) => value,
+        Err(error) => return error as u8,
+    };
+    let category = match parse_utf8_input(category) {
+        Ok(value) => value,
+        Err(error) => return error as u8,
+    };
+    let action = match parse_utf8_input(action) {
+        Ok(value) => value,
+        Err(error) => return error as u8,
+    };
+    let status = match parse_utf8_input(status) {
+        Ok(value) => value,
+        Err(error) => return error as u8,
+    };
+    let context_json = match parse_utf8_optional_input(context_json) {
+        Ok(value) => value,
+        Err(error) => return error as u8,
+    };
+
+    let Ok(mut runtime) = runtime_mutex().lock() else {
+        return FfiStatusCode::Internal as u8;
+    };
+
+    runtime.record_telemetry_event(
+        &source,
+        &category,
+        &action,
+        &status,
+        &context_json,
+        if value_ms == 0 { None } else { Some(value_ms) },
+    );
+    FfiStatusCode::Success as u8
+}
+
 /// Returns a heap-allocated JSON string with core events after the given ID.
 ///
 /// The caller owns the returned pointer and must release it using
@@ -558,11 +632,12 @@ mod tests {
 
     use super::{
         syntic_command_classify_json, syntic_command_safety_json, syntic_core_event_report_error,
-        syntic_core_event_report_permission, syntic_core_events_clear,
-        syntic_core_events_since_json, syntic_core_version, syntic_dictation_append_partial,
-        syntic_dictation_confirm, syntic_dictation_finalize_review, syntic_dictation_reset,
-        syntic_dictation_start, syntic_dictation_state_json, syntic_runtime_health_json,
-        syntic_string_free, syntic_stt_route_json,
+        syntic_core_event_report_permission, syntic_core_event_report_telemetry,
+        syntic_core_events_clear, syntic_core_events_since_json, syntic_core_version,
+        syntic_dictation_append_partial, syntic_dictation_confirm,
+        syntic_dictation_finalize_review, syntic_dictation_reset, syntic_dictation_start,
+        syntic_dictation_state_json, syntic_runtime_health_json, syntic_string_free,
+        syntic_stt_route_json,
     };
 
     #[test]
@@ -722,6 +797,42 @@ mod tests {
         assert!(payload_text.contains("\"kind\":\"permission\""));
         assert!(payload_text.contains("\"permission\":\"microphone\""));
         assert!(payload_text.contains("\"status\":\"denied\""));
+
+        // SAFETY: `payload_pointer` came from `syntic_core_events_since_json`.
+        unsafe { syntic_string_free(payload_pointer) };
+    }
+
+    #[test]
+    fn core_telemetry_event_is_exposed_via_events_json() {
+        assert_eq!(syntic_core_events_clear(), 0);
+
+        let source = CString::new("macos.pipeline").expect("cstring");
+        let category = CString::new("e2e").expect("cstring");
+        let action = CString::new("phase_changed").expect("cstring");
+        let status = CString::new("ok").expect("cstring");
+        let context_json = CString::new("{\"phase\":\"listening\"}").expect("cstring");
+        assert_eq!(
+            syntic_core_event_report_telemetry(
+                source.as_ptr(),
+                category.as_ptr(),
+                action.as_ptr(),
+                status.as_ptr(),
+                context_json.as_ptr(),
+                80
+            ),
+            0
+        );
+
+        let payload_pointer = syntic_core_events_since_json(0, 20);
+        assert!(!payload_pointer.is_null());
+
+        // SAFETY: pointer returned by `syntic_core_events_since_json` is a valid C string.
+        let payload = unsafe { CStr::from_ptr(payload_pointer) };
+        let payload_text = payload.to_str().expect("utf8");
+        assert!(payload_text.contains("\"kind\":\"telemetry\""));
+        assert!(payload_text.contains("\"category\":\"e2e\""));
+        assert!(payload_text.contains("\"action\":\"phase_changed\""));
+        assert!(payload_text.contains("\"value_ms\":80"));
 
         // SAFETY: `payload_pointer` came from `syntic_core_events_since_json`.
         unsafe { syntic_string_free(payload_pointer) };

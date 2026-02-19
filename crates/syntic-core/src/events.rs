@@ -9,6 +9,7 @@ const DEFAULT_EVENT_CAPACITY: usize = 256;
 pub enum CoreEventKind {
     Error,
     Permission,
+    Telemetry,
 }
 
 impl CoreEventKind {
@@ -17,6 +18,7 @@ impl CoreEventKind {
         match self {
             Self::Error => "error",
             Self::Permission => "permission",
+            Self::Telemetry => "telemetry",
         }
     }
 }
@@ -49,6 +51,13 @@ pub enum CoreEventPayload {
         permission: String,
         status: String,
         detail: String,
+    },
+    Telemetry {
+        category: String,
+        action: String,
+        status: String,
+        context_json: String,
+        value_ms: Option<u32>,
     },
 }
 
@@ -121,6 +130,29 @@ impl CoreEventJournal {
         )
     }
 
+    pub fn record_telemetry(
+        &mut self,
+        source: &str,
+        category: &str,
+        action: &str,
+        status: &str,
+        context_json: &str,
+        value_ms: Option<u32>,
+    ) -> u64 {
+        self.push_event(
+            source,
+            CoreEventKind::Telemetry,
+            telemetry_severity(status),
+            CoreEventPayload::Telemetry {
+                category: category.to_owned(),
+                action: action.to_owned(),
+                status: status.to_owned(),
+                context_json: context_json.to_owned(),
+                value_ms,
+            },
+        )
+    }
+
     #[must_use]
     pub fn events_since(&self, last_seen_event_id: u64, limit: usize) -> Vec<CoreEvent> {
         self.entries
@@ -174,6 +206,15 @@ pub fn permission_severity(status: &str) -> CoreEventSeverity {
     }
 }
 
+#[must_use]
+pub fn telemetry_severity(status: &str) -> CoreEventSeverity {
+    match status {
+        "error" | "failed" => CoreEventSeverity::Error,
+        "warn" | "degraded" | "fallback" => CoreEventSeverity::Warn,
+        _ => CoreEventSeverity::Info,
+    }
+}
+
 fn unix_timestamp_ms() -> u64 {
     let Ok(now) = SystemTime::now().duration_since(UNIX_EPOCH) else {
         return 0;
@@ -201,7 +242,9 @@ mod tests {
                 assert_eq!(permission, "microphone");
                 assert_eq!(status, "denied");
             }
-            CoreEventPayload::Error { .. } => panic!("expected permission payload"),
+            CoreEventPayload::Error { .. } | CoreEventPayload::Telemetry { .. } => {
+                panic!("expected permission payload")
+            }
         }
     }
 
@@ -229,5 +272,41 @@ mod tests {
         assert_eq!(id, 1);
         let events = journal.events_since(0, 4);
         assert_eq!(events.len(), 1);
+    }
+
+    #[test]
+    fn telemetry_event_stores_structured_payload() {
+        let mut journal = CoreEventJournal::with_capacity(4);
+        journal.record_telemetry(
+            "macos.pipeline",
+            "e2e",
+            "route_selected",
+            "ok",
+            "{\"provider\":\"local\"}",
+            Some(120),
+        );
+
+        let events = journal.events_since(0, 4);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].severity, CoreEventSeverity::Info);
+
+        match &events[0].payload {
+            CoreEventPayload::Telemetry {
+                category,
+                action,
+                status,
+                context_json,
+                value_ms,
+            } => {
+                assert_eq!(category, "e2e");
+                assert_eq!(action, "route_selected");
+                assert_eq!(status, "ok");
+                assert_eq!(context_json, "{\"provider\":\"local\"}");
+                assert_eq!(*value_ms, Some(120));
+            }
+            CoreEventPayload::Error { .. } | CoreEventPayload::Permission { .. } => {
+                panic!("expected telemetry payload")
+            }
+        }
     }
 }
