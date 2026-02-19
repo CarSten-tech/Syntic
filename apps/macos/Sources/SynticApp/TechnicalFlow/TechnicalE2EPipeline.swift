@@ -38,6 +38,8 @@ final class TechnicalE2EPipeline: ObservableObject {
     private var isStartingCapture = false
     private var activeSessionStartedAtMs: UInt64?
     private var activeRouteProvider = "unknown"
+    private var capturedInjectionTargetBundleIdentifier: String?
+    private var capturedInjectionTargetProcessIdentifier: pid_t?
     private var lastSeenCoreEventID: UInt64 = 0
     private var lastSeenDomainEventID: UInt64 = 0
     private var lastSeenToolRuntimeSignalID: UInt64 = 0
@@ -175,15 +177,17 @@ final class TechnicalE2EPipeline: ObservableObject {
         }
 
         setPhase("injecting", trigger: "confirm_review")
-        let frontmostBundleIdentifier = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+        let targetContext = resolvedInjectionTargetContext()
+        refocusInjectionTargetIfNeeded(targetContext)
+        let targetBundleIdentifier = targetContext.bundleIdentifier
         let injectionResult = textInjectionAdapter.inject(
             text: confirmedTranscript,
             strategy: .accessibilityFirst,
-            preferClipboardFor: frontmostBundleIdentifier
+            preferClipboardFor: targetBundleIdentifier
         )
 
         latestInjectionSummary =
-            "disposition=\(describe(injectionResult.disposition)), method=\(injectionResult.method.rawValue), bundle=\(frontmostBundleIdentifier ?? "unknown")"
+            "disposition=\(describe(injectionResult.disposition)), method=\(injectionResult.method.rawValue), bundle=\(targetBundleIdentifier ?? "unknown")"
         appendLog("Injection result: \(latestInjectionSummary). \(injectionResult.detail)")
         let injectionTelemetryStatus: String
         switch injectionResult.disposition {
@@ -201,7 +205,7 @@ final class TechnicalE2EPipeline: ObservableObject {
             context: [
                 "disposition": describe(injectionResult.disposition),
                 "method": injectionResult.method.rawValue,
-                "target_bundle": frontmostBundleIdentifier ?? "unknown",
+                "target_bundle": targetBundleIdentifier ?? "unknown",
             ]
         )
 
@@ -235,6 +239,7 @@ final class TechnicalE2EPipeline: ObservableObject {
         )
 
         _ = coreBridge.dictationReset()
+        clearCapturedInjectionTargetContext()
         setPhase("idle", trigger: "confirm_review_completed")
         refreshDictationState()
         emitTelemetry(
@@ -265,6 +270,7 @@ final class TechnicalE2EPipeline: ObservableObject {
         )
 
         _ = coreBridge.dictationReset()
+        clearCapturedInjectionTargetContext()
         setPhase("idle", trigger: "cancel_review_completed")
         refreshDictationState()
         emitTelemetry(category: "review", action: "cancelled", status: "ok", context: [:])
@@ -363,6 +369,7 @@ final class TechnicalE2EPipeline: ObservableObject {
         }
 
         _ = coreBridge.dictationReset()
+        captureInjectionTargetContext(triggerSource: triggerSource)
         let startStatus = coreBridge.dictationStart()
         guard startStatus == 0 else {
             fail("dictation_start_failed_status_\(startStatus)")
@@ -628,6 +635,7 @@ final class TechnicalE2EPipeline: ObservableObject {
 
     private func fail(_ reason: String, reportCoreError: Bool = true) {
         isStartingCapture = false
+        clearCapturedInjectionTargetContext()
         abortQueuedAndRunningToolInvocations(reason: "pipeline_failed_\(reason)", originDomainEventID: 0)
         _ = coreBridge.dictationFail(reason)
         persistSessionRecord(
@@ -1348,6 +1356,82 @@ final class TechnicalE2EPipeline: ObservableObject {
 
     private static func nowMs() -> UInt64 {
         UInt64(Date().timeIntervalSince1970 * 1_000)
+    }
+
+    private var ownBundleIdentifier: String? {
+        Bundle.main.bundleIdentifier
+    }
+
+    private func captureInjectionTargetContext(triggerSource: String) {
+        guard let frontmostApp = NSWorkspace.shared.frontmostApplication else {
+            return
+        }
+
+        let frontmostBundle = frontmostApp.bundleIdentifier
+        if frontmostBundle == ownBundleIdentifier {
+            emitTelemetry(
+                category: "injection_target",
+                action: "capture_skipped",
+                status: "degraded",
+                context: [
+                    "trigger_source": triggerSource,
+                    "reason": "frontmost_is_syntic",
+                ]
+            )
+            return
+        }
+
+        capturedInjectionTargetBundleIdentifier = frontmostBundle
+        capturedInjectionTargetProcessIdentifier = frontmostApp.processIdentifier
+        emitTelemetry(
+            category: "injection_target",
+            action: "captured",
+            status: "ok",
+            context: [
+                "trigger_source": triggerSource,
+                "bundle": frontmostBundle ?? "unknown",
+                "pid": "\(frontmostApp.processIdentifier)",
+            ]
+        )
+    }
+
+    private func clearCapturedInjectionTargetContext() {
+        capturedInjectionTargetBundleIdentifier = nil
+        capturedInjectionTargetProcessIdentifier = nil
+    }
+
+    private func resolvedInjectionTargetContext() -> (bundleIdentifier: String?, processIdentifier: pid_t?) {
+        let fallbackBundle = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+        let bundleIdentifier = capturedInjectionTargetBundleIdentifier ?? fallbackBundle
+        let processIdentifier = capturedInjectionTargetProcessIdentifier
+        return (bundleIdentifier, processIdentifier)
+    }
+
+    private func refocusInjectionTargetIfNeeded(_ targetContext: (bundleIdentifier: String?, processIdentifier: pid_t?)) {
+        guard
+            let targetBundleIdentifier = targetContext.bundleIdentifier,
+            targetBundleIdentifier != ownBundleIdentifier
+        else {
+            return
+        }
+
+        if NSWorkspace.shared.frontmostApplication?.bundleIdentifier == targetBundleIdentifier {
+            return
+        }
+
+        if
+            let processIdentifier = targetContext.processIdentifier,
+            let runningByPID = NSWorkspace.shared.runningApplications.first(where: { $0.processIdentifier == processIdentifier })
+        {
+            _ = runningByPID.activate(options: NSApplication.ActivationOptions.activateIgnoringOtherApps)
+            Thread.sleep(forTimeInterval: 0.12)
+            return
+        }
+
+        if let runningByBundle = NSRunningApplication.runningApplications(withBundleIdentifier: targetBundleIdentifier).first {
+            _ = runningByBundle.activate(options: NSApplication.ActivationOptions.activateIgnoringOtherApps)
+            Thread.sleep(forTimeInterval: 0.12)
+        }
     }
 }
 
