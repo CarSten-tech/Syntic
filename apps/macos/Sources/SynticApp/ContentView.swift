@@ -7,7 +7,7 @@ struct ContentView: View {
     let coreBridge: SynticCoreVersionProviding
     @ObservedObject var settingsController: AppSettingsController
     @ObservedObject var sessionHistoryController: SessionHistoryController
-    @StateObject private var technicalE2EPipeline: TechnicalE2EPipeline
+    @ObservedObject var technicalE2EPipeline: TechnicalE2EPipeline
     private let finderContextAdapter = MacOSFinderContextAdapter()
 
     @State private var dictationText = "Syntic test transcript"
@@ -21,18 +21,13 @@ struct ContentView: View {
     init(
         coreBridge: SynticCoreVersionProviding,
         settingsController: AppSettingsController,
-        sessionHistoryController: SessionHistoryController
+        sessionHistoryController: SessionHistoryController,
+        technicalE2EPipeline: TechnicalE2EPipeline
     ) {
         self.coreBridge = coreBridge
         self.settingsController = settingsController
         self.sessionHistoryController = sessionHistoryController
-        _technicalE2EPipeline = StateObject(
-            wrappedValue: TechnicalE2EPipeline(
-                coreBridge: coreBridge,
-                settingsController: settingsController,
-                sessionHistoryController: sessionHistoryController
-            )
-        )
+        self.technicalE2EPipeline = technicalE2EPipeline
     }
 
     var body: some View {
