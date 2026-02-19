@@ -5,6 +5,7 @@ import SwiftUI
 @MainActor
 final class HotkeyOverlayCoordinator {
     private var signalKindCancellable: AnyCancellable?
+    private var audioLevelCancellable: AnyCancellable?
     private let overlayWindowController = HotkeyOverlayWindowController()
 
     init(pipeline: TechnicalE2EPipeline) {
@@ -12,6 +13,11 @@ final class HotkeyOverlayCoordinator {
             .dropFirst()
             .sink { [weak self] kind in
                 self?.handleHotkeySignal(kind: kind)
+            }
+
+        audioLevelCancellable = pipeline.$latestAudioLevel
+            .sink { [weak self] level in
+                self?.overlayWindowController.updateAudioLevel(level)
             }
     }
 
@@ -30,6 +36,7 @@ final class HotkeyOverlayCoordinator {
 @MainActor
 private final class HotkeyOverlayWindowController {
     private var panel: NSPanel?
+    private let waveformModel = HotkeyOverlayWaveformModel()
 
     func show() {
         ensurePanel()
@@ -81,7 +88,7 @@ private final class HotkeyOverlayWindowController {
         panel.ignoresMouseEvents = true
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
 
-        let host = NSHostingView(rootView: HotkeyOverlayPillView())
+        let host = NSHostingView(rootView: HotkeyOverlayPillView(model: waveformModel))
         host.frame = NSRect(origin: .zero, size: initialFrame.size)
         host.autoresizingMask = [.width, .height]
         panel.contentView = host
@@ -111,9 +118,20 @@ private final class HotkeyOverlayWindowController {
         }
         return NSScreen.main ?? NSScreen.screens.first
     }
+
+    func updateAudioLevel(_ level: Float) {
+        waveformModel.level = CGFloat(max(0, min(1, level)))
+    }
+}
+
+@MainActor
+private final class HotkeyOverlayWaveformModel: ObservableObject {
+    @Published var level: CGFloat = 0
 }
 
 private struct HotkeyOverlayPillView: View {
+    @ObservedObject var model: HotkeyOverlayWaveformModel
+
     var body: some View {
         ZStack {
             RoundedRectangle(cornerRadius: 21, style: .continuous)
@@ -122,7 +140,7 @@ private struct HotkeyOverlayPillView: View {
                 .stroke(Color.white.opacity(0.14), lineWidth: 1)
 
             ZStack {
-                AnimatedWaveformView()
+                LiveWaveformView(level: model.level)
                     .frame(width: 80, height: 16)
 
                 HStack {
@@ -138,7 +156,8 @@ private struct HotkeyOverlayPillView: View {
     }
 }
 
-private struct AnimatedWaveformView: View {
+private struct LiveWaveformView: View {
+    let level: CGFloat
     private let barCount = 13
 
     var body: some View {
@@ -148,20 +167,23 @@ private struct AnimatedWaveformView: View {
                 ForEach(0..<barCount, id: \.self) { index in
                     Capsule(style: .continuous)
                         .fill(Color.white.opacity(opacity(for: index)))
-                        .frame(width: 3, height: height(for: index, time: t))
+                        .frame(width: 3, height: height(for: index, time: t, level: level))
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+        .animation(.easeOut(duration: 0.08), value: level)
     }
 
-    private func height(for index: Int, time: TimeInterval) -> CGFloat {
+    private func height(for index: Int, time: TimeInterval, level: CGFloat) -> CGFloat {
         let center = Double(barCount - 1) / 2
         let distanceFromCenter = abs(Double(index) - center)
         let centerWeight = max(0.2, 1 - (distanceFromCenter / center))
-        let wave = (sin((time * 6.4) + (Double(index) * 0.82)) + 1) / 2
-        let amplitude = (0.35 + (0.65 * wave)) * centerWeight
-        return CGFloat(4 + (12 * amplitude))
+        let wave = (sin((time * 6.6) + (Double(index) * 0.78)) + 1) / 2
+        let normalizedLevel = max(0.05, min(1, level))
+        let activity = Double(normalizedLevel) * (0.4 + (0.6 * wave))
+        let amplitude = activity * centerWeight
+        return CGFloat(3 + (14 * amplitude))
     }
 
     private func opacity(for index: Int) -> Double {

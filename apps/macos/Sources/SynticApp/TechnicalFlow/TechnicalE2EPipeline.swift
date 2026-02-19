@@ -40,6 +40,7 @@ final class TechnicalE2EPipeline: ObservableObject {
 
     private var isTranscribing = false
     private var isStartingCapture = false
+    private var shouldAutoConfirmAfterTranscription = false
     private var activeSessionStartedAtMs: UInt64?
     private var activeRouteProvider = "unknown"
     private var capturedInjectionTargetBundleIdentifier: String?
@@ -390,6 +391,7 @@ final class TechnicalE2EPipeline: ObservableObject {
         }
 
         _ = coreBridge.dictationReset()
+        shouldAutoConfirmAfterTranscription = false
         captureInjectionTargetContext(triggerSource: triggerSource)
         let startStatus = coreBridge.dictationStart()
         guard startStatus == 0 else {
@@ -471,6 +473,7 @@ final class TechnicalE2EPipeline: ObservableObject {
             return
         }
 
+        shouldAutoConfirmAfterTranscription = (triggerSource == "hotkey")
         latestAudioLevel = 0
         setPhase("transcribing", trigger: "listening_stopped", valueMs: captureResult.durationMs)
         isTranscribing = true
@@ -516,6 +519,7 @@ final class TechnicalE2EPipeline: ObservableObject {
 
         switch result {
         case let .failure(error):
+            shouldAutoConfirmAfterTranscription = false
             let sttFailureCode = reportStructuredSTTFailure(error)
             if sttFailureCode == "no_speech_detected" {
                 _ = coreBridge.dictationReset()
@@ -577,6 +581,11 @@ final class TechnicalE2EPipeline: ObservableObject {
             appendLog(
                 "Transcript ready from \(transcriptResult.provider), confidence=\(transcriptResult.confidencePercent)% latency=\(transcriptResult.latencyMs)ms."
             )
+
+            if shouldAutoConfirmAfterTranscription {
+                shouldAutoConfirmAfterTranscription = false
+                confirmReview()
+            }
         }
     }
 
@@ -656,6 +665,7 @@ final class TechnicalE2EPipeline: ObservableObject {
 
     private func fail(_ reason: String, reportCoreError: Bool = true) {
         isStartingCapture = false
+        shouldAutoConfirmAfterTranscription = false
         hotkeySignalKind = "idle"
         clearCapturedInjectionTargetContext()
         abortQueuedAndRunningToolInvocations(reason: "pipeline_failed_\(reason)", originDomainEventID: 0)
