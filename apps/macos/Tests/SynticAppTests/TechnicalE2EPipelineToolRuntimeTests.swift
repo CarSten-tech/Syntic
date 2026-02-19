@@ -99,9 +99,25 @@ final class TechnicalE2EPipelineToolRuntimeTests: XCTestCase {
         XCTAssertTrue(fixture.pipeline.latestInjectionSummary.contains("method=Clipboard"))
     }
 
+    func testDuplicateManualTriggerWhileCaptureStartPendingIsIgnored() async {
+        let fixture = makeFixture(
+            transcript: "save note duplicate trigger",
+            audioAdapter: FakeAudioCaptureAdapter(permissionDelayMs: 180)
+        )
+        defer { fixture.cleanup() }
+
+        fixture.pipeline.triggerHotkeyAction()
+        fixture.pipeline.triggerHotkeyAction()
+
+        let reachedListening = await waitUntil(timeoutMs: 4_000) { fixture.pipeline.phase == "listening" }
+        XCTAssertTrue(reachedListening)
+        XCTAssertNotEqual(fixture.pipeline.phase, "failed")
+    }
+
     private func makeFixture(
         transcript: String,
         localSttAdapter: STTTranscribing? = nil,
+        audioAdapter: AudioCapturing = FakeAudioCaptureAdapter(),
         textInjectionAdapter: TextInjecting = SuccessfulTextInjectionAdapter()
     ) -> PipelineFixture {
         let rootURL = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
@@ -116,7 +132,7 @@ final class TechnicalE2EPipelineToolRuntimeTests: XCTestCase {
             coreBridge: coreBridge,
             settingsController: settingsController,
             sessionHistoryController: sessionHistoryController,
-            audioAdapter: FakeAudioCaptureAdapter(),
+            audioAdapter: audioAdapter,
             hotkeyAdapter: NoopHotkeyAdapter(),
             localSttAdapter: localSttAdapter ?? ImmediateSuccessSTTAdapter(transcript: transcript),
             cloudSttAdapter: ImmediateSuccessSTTAdapter(transcript: transcript, providerIdentifier: "openai_whisper"),
@@ -557,13 +573,22 @@ private struct ReportedCorePermissionEvent {
 private final class FakeAudioCaptureAdapter: AudioCapturing {
     var isCapturing: Bool = false
     private let durationMs: UInt32
+    private let permissionDelayMs: UInt64
 
-    init(durationMs: UInt32 = 1_600) {
+    init(durationMs: UInt32 = 1_600, permissionDelayMs: UInt64 = 0) {
         self.durationMs = durationMs
+        self.permissionDelayMs = permissionDelayMs
     }
 
     func requestPermission(_ completion: @escaping (Bool) -> Void) {
-        completion(true)
+        guard permissionDelayMs > 0 else {
+            completion(true)
+            return
+        }
+
+        DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(Int(permissionDelayMs))) {
+            completion(true)
+        }
     }
 
     func startCapture(levelHandler: @escaping (Float) -> Void) throws {

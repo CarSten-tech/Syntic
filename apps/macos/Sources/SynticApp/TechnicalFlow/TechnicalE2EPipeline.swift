@@ -35,6 +35,7 @@ final class TechnicalE2EPipeline: ObservableObject {
     private let coreFeedProjector: CoreFeedProjecting
 
     private var isTranscribing = false
+    private var isStartingCapture = false
     private var activeSessionStartedAtMs: UInt64?
     private var activeRouteProvider = "unknown"
     private var lastSeenCoreEventID: UInt64 = 0
@@ -304,6 +305,17 @@ final class TechnicalE2EPipeline: ObservableObject {
     }
 
     private func handleHotkeyTrigger(source: String) {
+        if isStartingCapture {
+            emitTelemetry(
+                category: "hotkey",
+                action: "trigger_ignored",
+                status: "degraded",
+                context: ["source": source, "reason": "capture_start_in_progress"]
+            )
+            appendLog("Trigger (\(source)) ignored while capture start is in progress.")
+            return
+        }
+
         if isTranscribing {
             emitTelemetry(
                 category: "hotkey",
@@ -323,6 +335,16 @@ final class TechnicalE2EPipeline: ObservableObject {
     }
 
     private func startListening(triggerSource: String) {
+        if isStartingCapture {
+            emitTelemetry(
+                category: "dictation",
+                action: "start_ignored",
+                status: "degraded",
+                context: ["reason": "capture_start_in_progress"]
+            )
+            return
+        }
+
         _ = coreBridge.dictationReset()
         let startStatus = coreBridge.dictationStart()
         guard startStatus == 0 else {
@@ -339,6 +361,7 @@ final class TechnicalE2EPipeline: ObservableObject {
             status: "ok",
             context: ["trigger_source": triggerSource]
         )
+        isStartingCapture = true
 
         audioAdapter.requestPermission { [weak self] granted in
             Task { @MainActor [weak self] in
@@ -347,6 +370,7 @@ final class TechnicalE2EPipeline: ObservableObject {
                 }
 
                 if !granted {
+                    self.isStartingCapture = false
                     self.reportCorePermissionEvent(
                         source: "macos.audio",
                         permission: "microphone",
@@ -383,10 +407,12 @@ final class TechnicalE2EPipeline: ObservableObject {
                         }
                     }
                 } catch {
+                    self.isStartingCapture = false
                     self.fail("audio_capture_start_failed")
                     return
                 }
 
+                self.isStartingCapture = false
                 self.setPhase("listening", trigger: "audio_capture_started")
                 self.refreshDictationState()
                 self.appendLog("Listening started via \(triggerSource) trigger.")
@@ -559,6 +585,7 @@ final class TechnicalE2EPipeline: ObservableObject {
     }
 
     private func fail(_ reason: String, reportCoreError: Bool = true) {
+        isStartingCapture = false
         abortQueuedAndRunningToolInvocations(reason: "pipeline_failed_\(reason)", originDomainEventID: 0)
         _ = coreBridge.dictationFail(reason)
         persistSessionRecord(
