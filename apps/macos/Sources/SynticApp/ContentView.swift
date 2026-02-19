@@ -5,12 +5,23 @@ struct ContentView: View {
     @Environment(\.openWindow) private var openWindow
 
     let coreBridge: SynticCoreVersionProviding
+    @StateObject private var technicalE2EPipeline: TechnicalE2EPipeline
+    private let finderContextAdapter = MacOSFinderContextAdapter()
+
     @State private var dictationText = "Syntic test transcript"
     @State private var lastDictationStatusCode: UInt8 = 0
     @State private var dictationStatePayload = ""
     @State private var commandUtterance = "Stelle einen Timer auf 20min"
     @State private var commandIntentPayload = ""
     @State private var commandSafetyPayload = ""
+    @State private var finderSnapshotSummary = "-"
+
+    init(coreBridge: SynticCoreVersionProviding) {
+        self.coreBridge = coreBridge
+        _technicalE2EPipeline = StateObject(
+            wrappedValue: TechnicalE2EPipeline(coreBridge: coreBridge)
+        )
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -107,6 +118,73 @@ struct ContentView: View {
 
             Divider()
 
+            Text("Technical E2E: Hotkey -> Audio -> Routing -> Review")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            HStack {
+                Toggle("Network verfügbar", isOn: $technicalE2EPipeline.networkAvailable)
+                Toggle("Sensitive Mode", isOn: $technicalE2EPipeline.sensitiveModeEnabled)
+            }
+
+            TextField("Locale", text: $technicalE2EPipeline.locale)
+
+            HStack {
+                Button(technicalE2EPipeline.isHotkeyListening ? "Hotkey Listener stoppen" : "Hotkey Listener starten") {
+                    technicalE2EPipeline.toggleHotkeyListener()
+                }
+                Button("Manual Trigger") {
+                    technicalE2EPipeline.triggerHotkeyAction()
+                }
+            }
+
+            HStack {
+                Button("Review Confirm") {
+                    technicalE2EPipeline.confirmReview()
+                }
+                .disabled(!technicalE2EPipeline.reviewActionsEnabled)
+
+                Button("Review Cancel") {
+                    technicalE2EPipeline.cancelReview()
+                }
+                .disabled(!technicalE2EPipeline.reviewActionsEnabled)
+
+                Button("Finder Snapshot") {
+                    refreshFinderSnapshotSummary()
+                }
+            }
+
+            Text("E2E phase: \(technicalE2EPipeline.phase)")
+                .font(.caption2)
+            Text("Audio level: \(String(format: "%.2f", technicalE2EPipeline.latestAudioLevel))")
+                .font(.caption2)
+            Text("Route: \(technicalE2EPipeline.latestRouteJSON)")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .lineLimit(3)
+            Text("Transcript: \(technicalE2EPipeline.latestTranscript)")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+            Text("Core dictation state: \(technicalE2EPipeline.dictationStateJSON)")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .lineLimit(3)
+            Text("Finder snapshot: \(finderSnapshotSummary)")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .lineLimit(3)
+
+            ScrollView {
+                Text(technicalE2EPipeline.recentLogText)
+                    .font(.caption2.monospaced())
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .textSelection(.enabled)
+            }
+            .frame(height: 96)
+
+            Divider()
+
             Button("Spike Lab öffnen") {
                 openWindow(id: "spike-lab")
             }
@@ -117,10 +195,11 @@ struct ContentView: View {
             .keyboardShortcut("q")
         }
         .padding(14)
-        .frame(width: 430)
+        .frame(width: 640)
         .onAppear {
             refreshDictationStatePayload()
             refreshCommandPayloads()
+            refreshFinderSnapshotSummary()
         }
     }
 
@@ -131,5 +210,11 @@ struct ContentView: View {
     private func refreshCommandPayloads() {
         commandIntentPayload = coreBridge.commandClassifyJSON(commandUtterance)
         commandSafetyPayload = coreBridge.commandSafetyJSON(commandUtterance)
+    }
+
+    private func refreshFinderSnapshotSummary() {
+        let snapshot = finderContextAdapter.currentSelectionSnapshot()
+        finderSnapshotSummary =
+            "status=\(snapshot.status.rawValue), running=\(snapshot.finderRunning), frontmost=\(snapshot.finderFrontmost), selected=\(snapshot.selectedPaths.count)"
     }
 }

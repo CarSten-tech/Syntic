@@ -28,6 +28,11 @@ Abgrenzen, welche Kernbausteine vor der ersten echten Produkt-UI/UX technisch st
   - `MacOSTextInjectionAdapter` mit AX -> CGEvent -> Clipboard-Kette
   - `MacOSFinderContextAdapter` für Finder-Selektion via AppleScript
 - STT-Routing-Regeln im Core (`local/cloud/auto`, Sensitive-Mode Override).
+- Technischer E2E-Orchestrator in macOS-Shell:
+  - `Option+Space` Trigger (Hotkey Adapter)
+  - Audio-Capture über `AVAudioEngine`
+  - STT-Routing über Core-Entscheidung
+  - Review-State Übergang im Dictation-Core
 - Build- und Testkette (Rust + macOS Swift Build) grün.
 
 ## Noch vor erster Produkt-UI nötig
