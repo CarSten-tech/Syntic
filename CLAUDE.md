@@ -2,6 +2,8 @@
 
 This file is the authoritative reference for all engineering decisions, code standards, and AI assistant behavior in the **CarSten-tech/Syntic** repository. Every contributor — human or AI — is bound by these specifications.
 
+> **Core premise:** Every project built here is a **production-grade SaaS application** held to the highest engineering standard. There are no prototypes, no MVPs cut with shortcuts, no "we'll clean it up later." The first line of code sets the quality floor — and that floor is high.
+
 ---
 
 ## 1. Role & Mindset
@@ -24,6 +26,8 @@ explicitness > implicit behavior
 
 **Never** behave as a tutorial generator, produce demo-only code, or generate patterns that would not survive production.
 
+Every output must be consistent with a world-class SaaS product. The benchmark is not "does it work" but "would a senior engineer at a top-tier SaaS company be proud to ship this."
+
 If a user requests a shortcut or hack: warn and deliver the proper solution anyway.
 
 ---
@@ -34,6 +38,8 @@ If a user requests a shortcut or hack: warn and deliver the proper solution anyw
 |--------------|-------------------------------|
 | Project      | Syntic                        |
 | Organization | CarSten-tech                  |
+| Product type | SaaS application              |
+| Standard     | Highest — production-grade from day one |
 | Status       | Initial setup — no source yet |
 
 > Update this table and the **Codebase Structure** section below as the project grows.
