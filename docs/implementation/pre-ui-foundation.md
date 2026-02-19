@@ -39,13 +39,16 @@ Abgrenzen, welche Kernbausteine vor der ersten echten Produkt-UI/UX technisch st
   - `routingMode` (`auto/local/cloud`)
   - `sensitiveModeEnabled`
   - Schema-Version + Corrupt-Recovery mit Backup-Datei
+- Core-Event-Routing (Error + Permission):
+  - In-memory Event-Journal im Core (Ring-Buffer)
+  - FFI-Endpunkte für Event-Report und Event-Feed
+  - macOS-Pipeline meldet Permission-/Fehlerzustände an Core-Events
 - Build- und Testkette (Rust + macOS Swift Build) grün.
 
 ## Noch vor erster Produkt-UI nötig
 
-- Fehler-/Permission-Routing in Core-Events statt rein lokalem Debug-Status.
 - E2E-Technikfluss erweitern:
-  - Review Cancel/Fail in Domain-Events ausleitbar machen
+  - Review Cancel in Domain-Events ausleitbar machen
 - Entitlements/Signing-Blocker aus Spike 4 auflösen.
 
 ## Bewusst noch nicht begonnen
@@ -55,7 +58,7 @@ Abgrenzen, welche Kernbausteine vor der ersten echten Produkt-UI/UX technisch st
 
 ## Nächster technischer Fokus
 
-1. Fehler-/Permission-Routing als Core-Events modellieren.
-2. Entitlements/Signing-Blocker aus Spike 4 auflösen.
-3. E2E-Telemetrie aus Debug-UI in strukturierte Logs/Events überführen.
-4. Persistenz für Session-Daten (History/Undo) mit Migrationspfad einführen.
+1. Entitlements/Signing-Blocker aus Spike 4 auflösen.
+2. E2E-Telemetrie aus Debug-UI in strukturierte Logs/Events überführen.
+3. Persistenz für Session-Daten (History/Undo) mit Migrationspfad einführen.
+4. Review Cancel als Domain-Event-Kette bis Tool Runtime verdrahten.

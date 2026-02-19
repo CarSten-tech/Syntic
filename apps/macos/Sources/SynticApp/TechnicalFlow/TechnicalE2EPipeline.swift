@@ -9,6 +9,7 @@ final class TechnicalE2EPipeline: ObservableObject {
     @Published private(set) var latestRouteJSON = "{}"
     @Published private(set) var latestTranscript = ""
     @Published private(set) var latestInjectionSummary = "-"
+    @Published private(set) var coreEventsJSON = "{\"events\":[]}"
     @Published private(set) var dictationStateJSON = "{}"
     @Published private(set) var logs: [String] = []
 
@@ -42,6 +43,8 @@ final class TechnicalE2EPipeline: ObservableObject {
         self.textInjectionAdapter = textInjectionAdapter
 
         dictationStateJSON = coreBridge.dictationStateJSON()
+        _ = coreBridge.coreEventsClear()
+        refreshCoreEventsFeed()
         appendLog("Technical E2E pipeline initialized.")
     }
 
@@ -98,6 +101,15 @@ final class TechnicalE2EPipeline: ObservableObject {
         latestInjectionSummary =
             "disposition=\(describe(injectionResult.disposition)), method=\(injectionResult.method.rawValue), bundle=\(frontmostBundleIdentifier ?? "unknown")"
         appendLog("Injection result: \(latestInjectionSummary). \(injectionResult.detail)")
+
+        if injectionResult.detail.contains("Accessibility-Berechtigung fehlt.") {
+            reportCorePermissionEvent(
+                source: "macos.text_injection",
+                permission: "accessibility",
+                status: "denied",
+                detail: injectionResult.detail
+            )
+        }
 
         if injectionResult.disposition == .failed {
             fail("text_injection_failed")
@@ -159,9 +171,22 @@ final class TechnicalE2EPipeline: ObservableObject {
                 }
 
                 if !granted {
+                    self.reportCorePermissionEvent(
+                        source: "macos.audio",
+                        permission: "microphone",
+                        status: "denied",
+                        detail: "requestPermission callback returned false"
+                    )
                     self.fail("audio_permission_denied")
                     return
                 }
+
+                self.reportCorePermissionEvent(
+                    source: "macos.audio",
+                    permission: "microphone",
+                    status: "granted",
+                    detail: "requestPermission callback returned true"
+                )
 
                 do {
                     try self.audioAdapter.startCapture { [weak self] level in
@@ -240,6 +265,11 @@ final class TechnicalE2EPipeline: ObservableObject {
 
     private func fail(_ reason: String) {
         _ = coreBridge.dictationFail(reason)
+        reportCoreErrorEvent(
+            source: "macos.technical_e2e",
+            code: reason,
+            message: "Technical E2E flow failed"
+        )
         phase = "failed"
         isTranscribing = false
         refreshDictationState()
@@ -278,6 +308,36 @@ final class TechnicalE2EPipeline: ObservableObject {
         if logs.count > 80 {
             logs.removeFirst(logs.count - 80)
         }
+    }
+
+    private func reportCoreErrorEvent(source: String, code: String, message: String) {
+        let status = coreBridge.reportCoreErrorEvent(source: source, code: code, message: message)
+        if status != 0 {
+            appendLog("Core error event report failed: status=\(status)")
+        }
+        refreshCoreEventsFeed()
+    }
+
+    private func reportCorePermissionEvent(
+        source: String,
+        permission: String,
+        status: String,
+        detail: String
+    ) {
+        let reportStatus = coreBridge.reportCorePermissionEvent(
+            source: source,
+            permission: permission,
+            status: status,
+            detail: detail
+        )
+        if reportStatus != 0 {
+            appendLog("Core permission event report failed: status=\(reportStatus)")
+        }
+        refreshCoreEventsFeed()
+    }
+
+    private func refreshCoreEventsFeed() {
+        coreEventsJSON = coreBridge.coreEventsSinceJSON(lastSeenEventID: 0, limit: 64)
     }
 
     private static let timestampFormatter: DateFormatter = {

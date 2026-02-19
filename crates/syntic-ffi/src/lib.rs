@@ -8,6 +8,7 @@ use std::sync::{Mutex, OnceLock};
 use syntic_core::CoreRuntime;
 use syntic_core::command::{evaluate_safety, fallback_classify};
 use syntic_core::dictation::DictationTransitionError;
+use syntic_core::events::{CoreEvent, CoreEventPayload};
 use syntic_core::stt::{SttPreferenceMode, SttRoutingInput, select_provider};
 
 static CORE_RUNTIME: OnceLock<Mutex<CoreRuntime>> = OnceLock::new();
@@ -38,7 +39,7 @@ fn map_transition_error(error: DictationTransitionError) -> FfiStatusCode {
     }
 }
 
-fn with_runtime_mut<F>(operation: F) -> FfiStatusCode
+fn with_runtime_mut<F>(operation_name: &str, operation: F) -> FfiStatusCode
 where
     F: FnOnce(&mut CoreRuntime) -> Result<(), DictationTransitionError>,
 {
@@ -48,7 +49,18 @@ where
 
     match operation(&mut runtime) {
         Ok(()) => FfiStatusCode::Success,
-        Err(error) => map_transition_error(error),
+        Err(error) => {
+            runtime.record_error_event(
+                "ffi.dictation",
+                error.as_str(),
+                &format!(
+                    "Dictation transition failed in `{}`: {}",
+                    operation_name,
+                    error.as_str()
+                ),
+            );
+            map_transition_error(error)
+        }
     }
 }
 
@@ -71,6 +83,13 @@ fn parse_utf8_input(pointer: *const c_char) -> Result<String, FfiStatusCode> {
     let text = unsafe { CStr::from_ptr(pointer) };
     let value = text.to_str().map_err(|_| FfiStatusCode::InvalidUtf8)?;
     Ok(value.to_owned())
+}
+
+fn parse_utf8_optional_input(pointer: *const c_char) -> Result<String, FfiStatusCode> {
+    if pointer.is_null() {
+        return Ok(String::new());
+    }
+    parse_utf8_input(pointer)
 }
 
 fn json_escape(value: &str) -> String {
@@ -145,6 +164,52 @@ fn parse_stt_preference_mode(raw_value: u8) -> Option<SttPreferenceMode> {
         2 => Some(SttPreferenceMode::Auto),
         _ => None,
     }
+}
+
+fn normalized_event_limit(raw_limit: u16) -> usize {
+    if raw_limit == 0 {
+        return 50;
+    }
+    (raw_limit as usize).min(256)
+}
+
+fn core_event_json(event: &CoreEvent) -> String {
+    match &event.payload {
+        CoreEventPayload::Error { code, message } => format!(
+            "{{\"id\":{},\"timestamp_ms\":{},\"kind\":\"{}\",\"severity\":\"{}\",\"source\":\"{}\",\"code\":\"{}\",\"message\":\"{}\"}}",
+            event.id,
+            event.timestamp_ms,
+            event.kind.as_str(),
+            event.severity.as_str(),
+            json_escape(&event.source),
+            json_escape(code),
+            json_escape(message)
+        ),
+        CoreEventPayload::Permission {
+            permission,
+            status,
+            detail,
+        } => format!(
+            "{{\"id\":{},\"timestamp_ms\":{},\"kind\":\"{}\",\"severity\":\"{}\",\"source\":\"{}\",\"permission\":\"{}\",\"status\":\"{}\",\"detail\":\"{}\"}}",
+            event.id,
+            event.timestamp_ms,
+            event.kind.as_str(),
+            event.severity.as_str(),
+            json_escape(&event.source),
+            json_escape(permission),
+            json_escape(status),
+            json_escape(detail)
+        ),
+    }
+}
+
+fn core_events_payload_json(events: &[CoreEvent]) -> String {
+    let serialized_events = events
+        .iter()
+        .map(core_event_json)
+        .collect::<Vec<_>>()
+        .join(",");
+    format!("{{\"events\":[{serialized_events}]}}")
 }
 
 /// Returns a pointer to a static NUL-terminated UTF-8 version string.
@@ -250,6 +315,106 @@ pub extern "C" fn syntic_stt_route_json(
     to_heap_c_string(payload)
 }
 
+/// Emits an error event into the core event journal.
+///
+/// Returns a numeric FFI status code.
+#[unsafe(no_mangle)]
+pub extern "C" fn syntic_core_event_report_error(
+    source: *const c_char,
+    code: *const c_char,
+    message: *const c_char,
+) -> u8 {
+    let source = match parse_utf8_input(source) {
+        Ok(value) => value,
+        Err(error) => return error as u8,
+    };
+    let code = match parse_utf8_input(code) {
+        Ok(value) => value,
+        Err(error) => return error as u8,
+    };
+    let message = match parse_utf8_input(message) {
+        Ok(value) => value,
+        Err(error) => return error as u8,
+    };
+
+    let Ok(mut runtime) = runtime_mutex().lock() else {
+        return FfiStatusCode::Internal as u8;
+    };
+
+    runtime.record_error_event(&source, &code, &message);
+    FfiStatusCode::Success as u8
+}
+
+/// Emits a permission event into the core event journal.
+///
+/// `detail` is optional and may be null.
+///
+/// Returns a numeric FFI status code.
+#[unsafe(no_mangle)]
+pub extern "C" fn syntic_core_event_report_permission(
+    source: *const c_char,
+    permission: *const c_char,
+    status: *const c_char,
+    detail: *const c_char,
+) -> u8 {
+    let source = match parse_utf8_input(source) {
+        Ok(value) => value,
+        Err(error) => return error as u8,
+    };
+    let permission = match parse_utf8_input(permission) {
+        Ok(value) => value,
+        Err(error) => return error as u8,
+    };
+    let status = match parse_utf8_input(status) {
+        Ok(value) => value,
+        Err(error) => return error as u8,
+    };
+    let detail = match parse_utf8_optional_input(detail) {
+        Ok(value) => value,
+        Err(error) => return error as u8,
+    };
+
+    let Ok(mut runtime) = runtime_mutex().lock() else {
+        return FfiStatusCode::Internal as u8;
+    };
+
+    runtime.record_permission_event(&source, &permission, &status, &detail);
+    FfiStatusCode::Success as u8
+}
+
+/// Returns a heap-allocated JSON string with core events after the given ID.
+///
+/// The caller owns the returned pointer and must release it using
+/// `syntic_string_free`.
+#[unsafe(no_mangle)]
+pub extern "C" fn syntic_core_events_since_json(
+    last_seen_event_id: u64,
+    limit: u16,
+) -> *mut c_char {
+    let payload = with_runtime(|runtime| {
+        let events = runtime.core_events_since(last_seen_event_id, normalized_event_limit(limit));
+        core_events_payload_json(&events)
+    });
+
+    match payload {
+        Ok(json) => to_heap_c_string(json),
+        Err(_) => ptr::null_mut(),
+    }
+}
+
+/// Clears the in-memory core event journal.
+///
+/// Returns a numeric FFI status code.
+#[unsafe(no_mangle)]
+pub extern "C" fn syntic_core_events_clear() -> u8 {
+    let Ok(mut runtime) = runtime_mutex().lock() else {
+        return FfiStatusCode::Internal as u8;
+    };
+
+    runtime.clear_core_events();
+    FfiStatusCode::Success as u8
+}
+
 /// Resets dictation state to `idle`.
 ///
 /// Returns a numeric FFI status code.
@@ -268,7 +433,9 @@ pub extern "C" fn syntic_dictation_reset() -> u8 {
 /// Returns a numeric FFI status code.
 #[unsafe(no_mangle)]
 pub extern "C" fn syntic_dictation_start() -> u8 {
-    with_runtime_mut(|runtime| runtime.dictation_session_mut().start_listening()) as u8
+    with_runtime_mut("syntic_dictation_start", |runtime| {
+        runtime.dictation_session_mut().start_listening()
+    }) as u8
 }
 
 /// Updates live transcription text while dictation is listening.
@@ -278,10 +445,21 @@ pub extern "C" fn syntic_dictation_start() -> u8 {
 pub extern "C" fn syntic_dictation_append_partial(text: *const c_char) -> u8 {
     let transcript = match parse_utf8_input(text) {
         Ok(value) => value,
-        Err(error) => return error as u8,
+        Err(error) => {
+            if let Ok(mut runtime) = runtime_mutex().lock() {
+                runtime.record_error_event(
+                    "ffi.input",
+                    "dictation_append_partial_invalid_input",
+                    "append_partial received invalid UTF-8 or null input pointer",
+                );
+            }
+            return error as u8;
+        }
     };
 
-    with_runtime_mut(|runtime| runtime.dictation_session_mut().append_partial(&transcript)) as u8
+    with_runtime_mut("syntic_dictation_append_partial", |runtime| {
+        runtime.dictation_session_mut().append_partial(&transcript)
+    }) as u8
 }
 
 /// Finalizes dictation and moves it to review state.
@@ -291,10 +469,21 @@ pub extern "C" fn syntic_dictation_append_partial(text: *const c_char) -> u8 {
 pub extern "C" fn syntic_dictation_finalize_review(text: *const c_char) -> u8 {
     let transcript = match parse_utf8_input(text) {
         Ok(value) => value,
-        Err(error) => return error as u8,
+        Err(error) => {
+            if let Ok(mut runtime) = runtime_mutex().lock() {
+                runtime.record_error_event(
+                    "ffi.input",
+                    "dictation_finalize_review_invalid_input",
+                    "finalize_review received invalid UTF-8 or null input pointer",
+                );
+            }
+            return error as u8;
+        }
     };
 
-    with_runtime_mut(|runtime| runtime.dictation_session_mut().finalize_review(&transcript)) as u8
+    with_runtime_mut("syntic_dictation_finalize_review", |runtime| {
+        runtime.dictation_session_mut().finalize_review(&transcript)
+    }) as u8
 }
 
 /// Confirms the reviewed dictation text.
@@ -302,7 +491,9 @@ pub extern "C" fn syntic_dictation_finalize_review(text: *const c_char) -> u8 {
 /// Returns a numeric FFI status code.
 #[unsafe(no_mangle)]
 pub extern "C" fn syntic_dictation_confirm() -> u8 {
-    with_runtime_mut(|runtime| runtime.dictation_session_mut().confirm()) as u8
+    with_runtime_mut("syntic_dictation_confirm", |runtime| {
+        runtime.dictation_session_mut().confirm()
+    }) as u8
 }
 
 /// Cancels the current dictation session.
@@ -310,7 +501,9 @@ pub extern "C" fn syntic_dictation_confirm() -> u8 {
 /// Returns a numeric FFI status code.
 #[unsafe(no_mangle)]
 pub extern "C" fn syntic_dictation_cancel() -> u8 {
-    with_runtime_mut(|runtime| runtime.dictation_session_mut().cancel()) as u8
+    with_runtime_mut("syntic_dictation_cancel", |runtime| {
+        runtime.dictation_session_mut().cancel()
+    }) as u8
 }
 
 /// Moves dictation state to `failed` and sets an error message.
@@ -320,7 +513,16 @@ pub extern "C" fn syntic_dictation_cancel() -> u8 {
 pub extern "C" fn syntic_dictation_fail(message: *const c_char) -> u8 {
     let failure_message = match parse_utf8_input(message) {
         Ok(value) => value,
-        Err(error) => return error as u8,
+        Err(error) => {
+            if let Ok(mut runtime) = runtime_mutex().lock() {
+                runtime.record_error_event(
+                    "ffi.input",
+                    "dictation_fail_invalid_input",
+                    "dictation_fail received invalid UTF-8 or null input pointer",
+                );
+            }
+            return error as u8;
+        }
     };
 
     let Ok(mut runtime) = runtime_mutex().lock() else {
@@ -328,6 +530,7 @@ pub extern "C" fn syntic_dictation_fail(message: *const c_char) -> u8 {
     };
 
     runtime.dictation_session_mut().fail(&failure_message);
+    runtime.record_error_event("ffi.dictation", "dictation_failed", &failure_message);
     FfiStatusCode::Success as u8
 }
 
@@ -354,11 +557,12 @@ mod tests {
     use std::ptr;
 
     use super::{
-        syntic_command_classify_json, syntic_command_safety_json, syntic_core_version,
-        syntic_dictation_append_partial, syntic_dictation_confirm,
-        syntic_dictation_finalize_review, syntic_dictation_reset, syntic_dictation_start,
-        syntic_dictation_state_json, syntic_runtime_health_json, syntic_string_free,
-        syntic_stt_route_json,
+        syntic_command_classify_json, syntic_command_safety_json, syntic_core_event_report_error,
+        syntic_core_event_report_permission, syntic_core_events_clear,
+        syntic_core_events_since_json, syntic_core_version, syntic_dictation_append_partial,
+        syntic_dictation_confirm, syntic_dictation_finalize_review, syntic_dictation_reset,
+        syntic_dictation_start, syntic_dictation_state_json, syntic_runtime_health_json,
+        syntic_string_free, syntic_stt_route_json,
     };
 
     #[test]
@@ -464,6 +668,62 @@ mod tests {
         assert!(payload_text.contains("\"provider\":\"apple_speech_recognizer\""));
 
         // SAFETY: `payload_pointer` came from `syntic_stt_route_json`.
+        unsafe { syntic_string_free(payload_pointer) };
+    }
+
+    #[test]
+    fn core_error_event_is_exposed_via_events_json() {
+        assert_eq!(syntic_core_events_clear(), 0);
+
+        let source = CString::new("macos.pipeline").expect("cstring");
+        let code = CString::new("audio_capture_start_failed").expect("cstring");
+        let message = CString::new("engine start failed").expect("cstring");
+        assert_eq!(
+            syntic_core_event_report_error(source.as_ptr(), code.as_ptr(), message.as_ptr()),
+            0
+        );
+
+        let payload_pointer = syntic_core_events_since_json(0, 20);
+        assert!(!payload_pointer.is_null());
+
+        // SAFETY: pointer returned by `syntic_core_events_since_json` is a valid C string.
+        let payload = unsafe { CStr::from_ptr(payload_pointer) };
+        let payload_text = payload.to_str().expect("utf8");
+        assert!(payload_text.contains("\"kind\":\"error\""));
+        assert!(payload_text.contains("\"code\":\"audio_capture_start_failed\""));
+
+        // SAFETY: `payload_pointer` came from `syntic_core_events_since_json`.
+        unsafe { syntic_string_free(payload_pointer) };
+    }
+
+    #[test]
+    fn core_permission_event_accepts_null_detail_pointer() {
+        assert_eq!(syntic_core_events_clear(), 0);
+
+        let source = CString::new("macos.audio").expect("cstring");
+        let permission = CString::new("microphone").expect("cstring");
+        let status = CString::new("denied").expect("cstring");
+        assert_eq!(
+            syntic_core_event_report_permission(
+                source.as_ptr(),
+                permission.as_ptr(),
+                status.as_ptr(),
+                ptr::null()
+            ),
+            0
+        );
+
+        let payload_pointer = syntic_core_events_since_json(0, 20);
+        assert!(!payload_pointer.is_null());
+
+        // SAFETY: pointer returned by `syntic_core_events_since_json` is a valid C string.
+        let payload = unsafe { CStr::from_ptr(payload_pointer) };
+        let payload_text = payload.to_str().expect("utf8");
+        assert!(payload_text.contains("\"kind\":\"permission\""));
+        assert!(payload_text.contains("\"permission\":\"microphone\""));
+        assert!(payload_text.contains("\"status\":\"denied\""));
+
+        // SAFETY: `payload_pointer` came from `syntic_core_events_since_json`.
         unsafe { syntic_string_free(payload_pointer) };
     }
 }

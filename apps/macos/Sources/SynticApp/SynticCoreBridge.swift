@@ -15,6 +15,15 @@ protocol SynticCoreVersionProviding {
     func dictationFail(_ message: String) -> UInt8
     func commandClassifyJSON(_ utterance: String) -> String
     func commandSafetyJSON(_ utterance: String) -> String
+    func coreEventsSinceJSON(lastSeenEventID: UInt64, limit: UInt16) -> String
+    func coreEventsClear() -> UInt8
+    func reportCoreErrorEvent(source: String, code: String, message: String) -> UInt8
+    func reportCorePermissionEvent(
+        source: String,
+        permission: String,
+        status: String,
+        detail: String
+    ) -> UInt8
     func sttRouteJSON(
         preferenceMode: UInt8,
         sensitiveModeEnabled: Bool,
@@ -95,6 +104,48 @@ struct SynticCoreBridge: SynticCoreVersionProviding {
         utterance.withCString { utf8Pointer in
             readHeapJsonPayload(fallback: "{\"decision\":\"ffi-null-payload\"}") {
                 syntic_command_safety_json(utf8Pointer)
+            }
+        }
+    }
+
+    func coreEventsSinceJSON(lastSeenEventID: UInt64, limit: UInt16) -> String {
+        readHeapJsonPayload(fallback: "{\"events\":[]}") {
+            syntic_core_events_since_json(lastSeenEventID, limit)
+        }
+    }
+
+    func coreEventsClear() -> UInt8 {
+        syntic_core_events_clear()
+    }
+
+    func reportCoreErrorEvent(source: String, code: String, message: String) -> UInt8 {
+        source.withCString { sourcePointer in
+            code.withCString { codePointer in
+                message.withCString { messagePointer in
+                    syntic_core_event_report_error(sourcePointer, codePointer, messagePointer)
+                }
+            }
+        }
+    }
+
+    func reportCorePermissionEvent(
+        source: String,
+        permission: String,
+        status: String,
+        detail: String
+    ) -> UInt8 {
+        source.withCString { sourcePointer in
+            permission.withCString { permissionPointer in
+                status.withCString { statusPointer in
+                    detail.withCString { detailPointer in
+                        syntic_core_event_report_permission(
+                            sourcePointer,
+                            permissionPointer,
+                            statusPointer,
+                            detailPointer
+                        )
+                    }
+                }
             }
         }
     }

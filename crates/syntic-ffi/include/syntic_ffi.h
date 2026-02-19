@@ -32,6 +32,17 @@ char *syntic_stt_route_json(uint8_t preference_mode,
                             uint8_t sensitive_mode_enabled,
                             uint8_t network_available,
                             uint32_t utterance_duration_ms);
+char *syntic_core_events_since_json(uint64_t last_seen_event_id, uint16_t limit);
+
+// Structured core events for errors and permission state.
+uint8_t syntic_core_event_report_error(const char *source,
+                                       const char *code,
+                                       const char *message);
+uint8_t syntic_core_event_report_permission(const char *source,
+                                            const char *permission,
+                                            const char *status,
+                                            const char *detail);
+uint8_t syntic_core_events_clear(void);
 
 // Dictation flow state transitions.
 uint8_t syntic_dictation_reset(void);
