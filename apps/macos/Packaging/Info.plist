@@ -27,5 +27,7 @@
   <string>Syntic benötigt Zugriff auf Finder-Kontext für Dateiaktionen.</string>
   <key>NSMicrophoneUsageDescription</key>
   <string>Syntic benötigt Mikrofonzugriff für systemweites Diktat.</string>
+  <key>NSSpeechRecognitionUsageDescription</key>
+  <string>Syntic benötigt Spracherkennung für lokale Transkription.</string>
 </dict>
 </plist>

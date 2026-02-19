@@ -5,6 +5,7 @@ enum AudioCaptureAdapterError: Error {
     case permissionDenied
     case captureAlreadyRunning
     case engineStartFailed
+    case recordingInitializationFailed
     case captureNotRunning
 }
 
@@ -15,6 +16,25 @@ struct AudioCaptureResult {
     let durationMs: UInt32
     let averagePower: Float
     let peakPower: Float
+    let recordingFileURL: URL?
+
+    init(
+        sampleRate: Double,
+        channelCount: UInt32,
+        frameCount: Int,
+        durationMs: UInt32,
+        averagePower: Float,
+        peakPower: Float,
+        recordingFileURL: URL? = nil
+    ) {
+        self.sampleRate = sampleRate
+        self.channelCount = channelCount
+        self.frameCount = frameCount
+        self.durationMs = durationMs
+        self.averagePower = averagePower
+        self.peakPower = peakPower
+        self.recordingFileURL = recordingFileURL
+    }
 }
 
 protocol AudioCapturing: AnyObject {
@@ -27,6 +47,7 @@ protocol AudioCapturing: AnyObject {
 final class MacOSAudioCaptureAdapter: AudioCapturing {
     private let audioEngine = AVAudioEngine()
     private let stateQueue = DispatchQueue(label: "com.syntic.audio-capture.state")
+    private let fileManager = FileManager.default
 
     private var internalIsCapturing = false
     private var levelHandler: ((Float) -> Void)?
@@ -36,6 +57,9 @@ final class MacOSAudioCaptureAdapter: AudioCapturing {
     private var frameCount = 0
     private var weightedPowerSum = 0.0
     private var peakPower: Float = 0
+    private var recordingFileURL: URL?
+    private var recordingFile: AVAudioFile?
+    private var recordingWriteFailed = false
 
     var isCapturing: Bool {
         stateQueue.sync { internalIsCapturing }
@@ -76,6 +100,24 @@ final class MacOSAudioCaptureAdapter: AudioCapturing {
             channelCount = format.channelCount
         }
 
+        let captureFileURL: URL
+        do {
+            captureFileURL = try makeCaptureFileURL()
+        } catch {
+            throw AudioCaptureAdapterError.recordingInitializationFailed
+        }
+
+        do {
+            let captureFile = try AVAudioFile(forWriting: captureFileURL, settings: format.settings)
+            stateQueue.sync {
+                recordingFileURL = captureFileURL
+                recordingFile = captureFile
+                recordingWriteFailed = false
+            }
+        } catch {
+            throw AudioCaptureAdapterError.recordingInitializationFailed
+        }
+
         inputNode.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
             self?.handleAudioBuffer(buffer)
         }
@@ -109,6 +151,13 @@ final class MacOSAudioCaptureAdapter: AudioCapturing {
             let effectiveFrameCount = max(frameCount, 1)
             let averagePower = Float(weightedPowerSum / Double(effectiveFrameCount))
             let durationMs = UInt32((Double(frameCount) / sampleRate) * 1_000)
+            let captureURL = recordingWriteFailed ? nil : recordingFileURL
+            recordingFile = nil
+            if recordingWriteFailed, let failedURL = recordingFileURL {
+                try? fileManager.removeItem(at: failedURL)
+            }
+            recordingFileURL = nil
+            recordingWriteFailed = false
 
             return AudioCaptureResult(
                 sampleRate: sampleRate,
@@ -116,7 +165,8 @@ final class MacOSAudioCaptureAdapter: AudioCapturing {
                 frameCount: frameCount,
                 durationMs: durationMs,
                 averagePower: averagePower,
-                peakPower: peakPower
+                peakPower: peakPower,
+                recordingFileURL: captureURL
             )
         }
     }
@@ -150,6 +200,13 @@ final class MacOSAudioCaptureAdapter: AudioCapturing {
         let normalizedLevel = max(0, min(1, (20 * log10f(max(rms, 0.000_01)) + 60) / 60))
 
         stateQueue.sync {
+            if let recordingFile {
+                do {
+                    try recordingFile.write(from: buffer)
+                } catch {
+                    recordingWriteFailed = true
+                }
+            }
             frameCount += sampleCount
             weightedPowerSum += Double(rms) * Double(sampleCount)
             peakPower = max(peakPower, rms)
@@ -160,5 +217,13 @@ final class MacOSAudioCaptureAdapter: AudioCapturing {
                 levelHandler(normalizedLevel)
             }
         }
+    }
+
+    private func makeCaptureFileURL() throws -> URL {
+        let capturesDirectory = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("Syntic", isDirectory: true)
+            .appendingPathComponent("captures", isDirectory: true)
+        try fileManager.createDirectory(at: capturesDirectory, withIntermediateDirectories: true)
+        return capturesDirectory.appendingPathComponent("capture-\(UUID().uuidString).caf", isDirectory: false)
     }
 }

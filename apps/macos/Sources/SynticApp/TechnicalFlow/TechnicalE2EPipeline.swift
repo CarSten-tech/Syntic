@@ -59,7 +59,7 @@ final class TechnicalE2EPipeline: ObservableObject {
         sessionHistoryController: SessionHistoryController,
         audioAdapter: AudioCapturing = MacOSAudioCaptureAdapter(),
         hotkeyAdapter: HotkeyListening = MacOSGlobalHotkeyAdapter(),
-        localSttAdapter: STTTranscribing = LocalStubSTTAdapter(),
+        localSttAdapter: STTTranscribing = AppleSpeechRecognizerSTTAdapter(),
         cloudSttAdapter: STTTranscribing = CloudStubSTTAdapter(),
         textInjectionAdapter: TextInjecting = MacOSTextInjectionAdapter(),
         toolExecutor: ToolExecuting = FileBackedToolExecutor(),

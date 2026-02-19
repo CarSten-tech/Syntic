@@ -29,7 +29,10 @@ let package = Package(
         .executableTarget(
             name: "SynticApp",
             dependencies: ["SynticFFI"],
-            path: "Sources/SynticApp"
+            path: "Sources/SynticApp",
+            linkerSettings: [
+                .linkedFramework("Speech"),
+            ]
         ),
         .testTarget(
             name: "SynticAppTests",

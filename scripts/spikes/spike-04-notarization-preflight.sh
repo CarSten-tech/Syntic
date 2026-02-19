@@ -127,6 +127,7 @@ if [[ -f "${INFO_PLIST}" ]]; then
   check_plist_lint "${INFO_PLIST}" "info-plist-lint"
   check_plist_key "${INFO_PLIST}" ":CFBundleIdentifier" "info-cfbundleidentifier"
   check_plist_key "${INFO_PLIST}" ":NSMicrophoneUsageDescription" "info-microphone-usage"
+  check_plist_key "${INFO_PLIST}" ":NSSpeechRecognitionUsageDescription" "info-speech-usage"
   check_plist_key "${INFO_PLIST}" ":NSAppleEventsUsageDescription" "info-appleevents-usage"
   BUNDLE_ID="$("${PLIST_BUDDY}" -c "Print :CFBundleIdentifier" "${INFO_PLIST}" 2>/dev/null || true)"
   if [[ "${BUNDLE_ID}" =~ ^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$ ]]; then
