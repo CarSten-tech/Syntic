@@ -118,7 +118,7 @@ struct ContentView: View {
 
             Divider()
 
-            Text("Technical E2E: Hotkey -> Audio -> Routing -> Review")
+            Text("Technical E2E: Hotkey -> Audio -> Routing -> Review -> Injection")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
@@ -163,6 +163,10 @@ struct ContentView: View {
                 .foregroundStyle(.secondary)
                 .lineLimit(3)
             Text("Transcript: \(technicalE2EPipeline.latestTranscript)")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+            Text("Injection: \(technicalE2EPipeline.latestInjectionSummary)")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .lineLimit(2)

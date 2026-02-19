@@ -33,6 +33,7 @@ Abgrenzen, welche Kernbausteine vor der ersten echten Produkt-UI/UX technisch st
   - Audio-Capture über `AVAudioEngine`
   - STT-Routing über Core-Entscheidung
   - Review-State Übergang im Dictation-Core
+  - Confirm -> TextInjection (AX -> CGEvent -> Clipboard-Fallback)
 - Build- und Testkette (Rust + macOS Swift Build) grün.
 
 ## Noch vor erster Produkt-UI nötig
@@ -40,8 +41,7 @@ Abgrenzen, welche Kernbausteine vor der ersten echten Produkt-UI/UX technisch st
 - Persistenz für Settings/Session-Daten (SQLite + Migrationspfad).
 - Fehler-/Permission-Routing in Core-Events statt rein lokalem Debug-Status.
 - E2E-Technikfluss erweitern:
-  - Hotkey -> Audio -> STT -> Reviewing State -> Confirm -> Injection Request
-  - Confirm-Flow mit TextInjectionAdapter verdrahten
+  - Hotkey -> Audio -> STT -> Reviewing State -> Confirm -> Injection
   - Review Cancel/Fail in Domain-Events ausleitbar machen
 - Entitlements/Signing-Blocker aus Spike 4 auflösen.
 
@@ -52,7 +52,7 @@ Abgrenzen, welche Kernbausteine vor der ersten echten Produkt-UI/UX technisch st
 
 ## Nächster technischer Fokus
 
-1. Confirm -> TextInjection als durchgehenden E2E-Schritt anbinden.
-2. Persistente Settings (Locale, Routing-Mode, Sensitive-Mode) einführen.
-3. Fehler-/Permission-Routing als Core-Events modellieren.
-4. Entitlements/Signing-Blocker aus Spike 4 auflösen.
+1. Persistente Settings (Locale, Routing-Mode, Sensitive-Mode) einführen.
+2. Fehler-/Permission-Routing als Core-Events modellieren.
+3. Entitlements/Signing-Blocker aus Spike 4 auflösen.
+4. E2E-Telemetrie aus Debug-UI in strukturierte Logs/Events überführen.

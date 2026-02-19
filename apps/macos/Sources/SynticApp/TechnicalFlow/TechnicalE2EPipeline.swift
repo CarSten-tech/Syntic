@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 
 @MainActor
@@ -7,6 +8,7 @@ final class TechnicalE2EPipeline: ObservableObject {
     @Published private(set) var latestAudioLevel: Float = 0
     @Published private(set) var latestRouteJSON = "{}"
     @Published private(set) var latestTranscript = ""
+    @Published private(set) var latestInjectionSummary = "-"
     @Published private(set) var dictationStateJSON = "{}"
     @Published private(set) var logs: [String] = []
 
@@ -19,6 +21,7 @@ final class TechnicalE2EPipeline: ObservableObject {
     private let hotkeyAdapter: HotkeyListening
     private let localSttAdapter: STTTranscribing
     private let cloudSttAdapter: STTTranscribing
+    private let textInjectionAdapter: TextInjecting
 
     private var isTranscribing = false
 
@@ -27,13 +30,15 @@ final class TechnicalE2EPipeline: ObservableObject {
         audioAdapter: AudioCapturing = MacOSAudioCaptureAdapter(),
         hotkeyAdapter: HotkeyListening = MacOSGlobalHotkeyAdapter(),
         localSttAdapter: STTTranscribing = LocalStubSTTAdapter(),
-        cloudSttAdapter: STTTranscribing = CloudStubSTTAdapter()
+        cloudSttAdapter: STTTranscribing = CloudStubSTTAdapter(),
+        textInjectionAdapter: TextInjecting = MacOSTextInjectionAdapter()
     ) {
         self.coreBridge = coreBridge
         self.audioAdapter = audioAdapter
         self.hotkeyAdapter = hotkeyAdapter
         self.localSttAdapter = localSttAdapter
         self.cloudSttAdapter = cloudSttAdapter
+        self.textInjectionAdapter = textInjectionAdapter
 
         dictationStateJSON = coreBridge.dictationStateJSON()
         appendLog("Technical E2E pipeline initialized.")
@@ -75,6 +80,29 @@ final class TechnicalE2EPipeline: ObservableObject {
     }
 
     func confirmReview() {
+        let confirmedTranscript = latestTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !confirmedTranscript.isEmpty else {
+            fail("review_confirm_without_transcript")
+            return
+        }
+
+        phase = "injecting"
+        let frontmostBundleIdentifier = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+        let injectionResult = textInjectionAdapter.inject(
+            text: confirmedTranscript,
+            strategy: .accessibilityFirst,
+            preferClipboardFor: frontmostBundleIdentifier
+        )
+
+        latestInjectionSummary =
+            "disposition=\(describe(injectionResult.disposition)), method=\(injectionResult.method.rawValue), bundle=\(frontmostBundleIdentifier ?? "unknown")"
+        appendLog("Injection result: \(latestInjectionSummary). \(injectionResult.detail)")
+
+        if injectionResult.disposition == .failed {
+            fail("text_injection_failed")
+            return
+        }
+
         let confirmStatus = coreBridge.dictationConfirm()
         guard confirmStatus == 0 else {
             fail("dictation_confirm_failed_status_\(confirmStatus)")
@@ -120,6 +148,8 @@ final class TechnicalE2EPipeline: ObservableObject {
             fail("dictation_start_failed_status_\(startStatus)")
             return
         }
+
+        latestInjectionSummary = "-"
 
         audioAdapter.requestPermission { [weak self] granted in
             Task { @MainActor [weak self] in
@@ -229,6 +259,17 @@ final class TechnicalE2EPipeline: ObservableObject {
         }
 
         return provider
+    }
+
+    private func describe(_ disposition: TextInjectionDisposition) -> String {
+        switch disposition {
+        case .injected:
+            return "injected"
+        case .clipboardFallback:
+            return "clipboard_fallback"
+        case .failed:
+            return "failed"
+        }
     }
 
     private func appendLog(_ message: String) {
