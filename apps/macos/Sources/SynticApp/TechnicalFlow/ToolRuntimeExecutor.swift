@@ -11,6 +11,7 @@ struct ToolExecutionPlan {
     let destructive: Bool
     let safetyReason: String
     let moveDestinationHint: String?
+    let moveDestinationKindHint: String?
     let renameTargetHint: String?
     let timerDurationHint: String?
 }
@@ -153,7 +154,10 @@ final class FileBackedToolExecutor: ToolExecuting {
         let transcriptHint = parsedDestinationTokenFromTranscript(plan.transcript) ?? ""
         let destinationToken = destinationHint.isEmpty ? transcriptHint : destinationHint
 
-        guard let destinationURL = destinationDirectoryURL(from: destinationToken) else {
+        guard let destinationURL = destinationDirectoryURL(
+            from: destinationToken,
+            kindHint: plan.moveDestinationKindHint
+        ) else {
             return ToolExecutionResult(
                 outcome: .rejected,
                 detail: "Move rejected: destination path missing or unsupported.",
@@ -312,10 +316,28 @@ final class FileBackedToolExecutor: ToolExecuting {
         return destinationToken.isEmpty ? nil : destinationToken
     }
 
-    private func destinationDirectoryURL(from destinationToken: String) -> URL? {
+    private func destinationDirectoryURL(from destinationToken: String, kindHint: String?) -> URL? {
         guard !destinationToken.isEmpty else {
             return nil
         }
+
+        switch kindHint?.lowercased() {
+        case "desktop":
+            return fileManager.urls(for: .desktopDirectory, in: .userDomainMask).first
+        case "documents":
+            return fileManager.urls(for: .documentDirectory, in: .userDomainMask).first
+        case "downloads":
+            return fileManager.urls(for: .downloadsDirectory, in: .userDomainMask).first
+        case "absolute_path":
+            let expanded = (destinationToken as NSString).expandingTildeInPath
+            guard expanded.hasPrefix("/") else {
+                return nil
+            }
+            return URL(fileURLWithPath: expanded, isDirectory: true)
+        default:
+            break
+        }
+
         switch destinationToken.lowercased() {
         case "desktop":
             return fileManager.urls(for: .desktopDirectory, in: .userDomainMask).first

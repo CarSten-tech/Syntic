@@ -142,6 +142,10 @@ fn command_intent_json(utterance: &str) -> String {
         || "null".to_owned(),
         |value| format!("\"{}\"", json_escape(value)),
     );
+    let move_destination_kind_json = intent.arguments.move_destination_kind.map_or_else(
+        || "null".to_owned(),
+        |kind| format!("\"{}\"", kind.as_str()),
+    );
     let rename_target_json = intent.arguments.rename_target.as_deref().map_or_else(
         || "null".to_owned(),
         |value| format!("\"{}\"", json_escape(value)),
@@ -152,12 +156,13 @@ fn command_intent_json(utterance: &str) -> String {
     );
 
     format!(
-        "{{\"kind\":\"{}\",\"summary\":\"{}\",\"confidence_percent\":{},\"requires_confirmation\":{},\"arguments\":{{\"move_destination\":{},\"rename_target\":{},\"timer_duration\":{}}}}}",
+        "{{\"kind\":\"{}\",\"summary\":\"{}\",\"confidence_percent\":{},\"requires_confirmation\":{},\"arguments\":{{\"move_destination\":{},\"move_destination_kind\":{},\"rename_target\":{},\"timer_duration\":{}}}}}",
         intent.kind.as_str(),
         json_escape(&intent.summary),
         intent.confidence_percent,
         intent.requires_confirmation,
         move_destination_json,
+        move_destination_kind_json,
         rename_target_json,
         timer_duration_json
     )
@@ -1000,6 +1005,23 @@ mod tests {
         assert!(payload_text.contains("\"destructive\":true"));
 
         // SAFETY: `payload_pointer` came from `syntic_command_safety_json`.
+        unsafe { syntic_string_free(payload_pointer) };
+    }
+
+    #[test]
+    fn command_classification_json_includes_move_destination_kind() {
+        let _guard = test_guard();
+        let utterance = CString::new("move file report to /tmp/archive").expect("cstring");
+        let payload_pointer = syntic_command_classify_json(utterance.as_ptr());
+        assert!(!payload_pointer.is_null());
+
+        // SAFETY: pointer returned by `syntic_command_classify_json` is a valid C string.
+        let payload = unsafe { CStr::from_ptr(payload_pointer) };
+        let payload_text = payload.to_str().expect("utf8");
+        assert!(payload_text.contains("\"move_destination\":\"/tmp/archive\""));
+        assert!(payload_text.contains("\"move_destination_kind\":\"absolute_path\""));
+
+        // SAFETY: `payload_pointer` came from `syntic_command_classify_json`.
         unsafe { syntic_string_free(payload_pointer) };
     }
 

@@ -294,9 +294,9 @@ private final class FakeCoreBridge: SynticCoreVersionProviding {
     func commandClassifyJSON(_ utterance: String) -> String {
         let normalized = utterance.lowercased()
         if normalized.contains("note") || normalized.contains("notiz") {
-            return "{\"kind\":\"save_note\",\"summary\":\"Notiz speichern\",\"confidence_percent\":70,\"requires_confirmation\":true,\"arguments\":{\"move_destination\":null,\"rename_target\":null,\"timer_duration\":null}}"
+            return "{\"kind\":\"save_note\",\"summary\":\"Notiz speichern\",\"confidence_percent\":70,\"requires_confirmation\":true,\"arguments\":{\"move_destination\":null,\"move_destination_kind\":null,\"rename_target\":null,\"timer_duration\":null}}"
         }
-        return "{\"kind\":\"unknown\",\"summary\":\"unsupported\",\"confidence_percent\":0,\"requires_confirmation\":false,\"arguments\":{\"move_destination\":null,\"rename_target\":null,\"timer_duration\":null}}"
+        return "{\"kind\":\"unknown\",\"summary\":\"unsupported\",\"confidence_percent\":0,\"requires_confirmation\":false,\"arguments\":{\"move_destination\":null,\"move_destination_kind\":null,\"rename_target\":null,\"timer_duration\":null}}"
     }
 
     func commandSafetyJSON(_ utterance: String) -> String {

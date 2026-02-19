@@ -77,6 +77,39 @@ final class ToolRuntimeExecutorTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: fileB.path))
     }
 
+    func testStructuredMoveHintOverridesTranscriptFallback() throws {
+        let fixture = try makeMoveFixture()
+        defer { fixture.cleanup() }
+
+        let misleadingTranscript = "move file to documents"
+        let plan = ToolExecutionPlan(
+            invocationID: "test-\(UUID().uuidString)",
+            transcript: misleadingTranscript,
+            origin: "unit_test",
+            intentKind: "move_file",
+            intentSummary: "summary",
+            confidencePercent: 80,
+            safetyDecision: "require_confirmation",
+            destructive: true,
+            safetyReason: "explicit_user_confirmation_required",
+            moveDestinationHint: fixture.destinationFileURL.deletingLastPathComponent().path,
+            moveDestinationKindHint: "absolute_path",
+            renameTargetHint: nil,
+            timerDurationHint: nil
+        )
+
+        let executor = FileBackedToolExecutor(
+            rootDirectoryURL: fixture.runtimeRootURL,
+            finderContextProvider: StaticFinderContextProvider(snapshot: fixture.snapshot),
+            destructiveExecutionMode: .allowExecution
+        )
+        let result = try executor.execute(plan: plan)
+
+        XCTAssertEqual(result.outcome, .executed)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.sourceFileURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.destinationFileURL.path))
+    }
+
     private func makeMoveFixture() throws -> MoveFixture {
         let rootURL = try makeTemporaryDirectory()
         let runtimeRootURL = rootURL.appendingPathComponent("runtime", isDirectory: true)
@@ -143,6 +176,7 @@ final class ToolRuntimeExecutorTests: XCTestCase {
             destructive: intentKind == "move_file" || intentKind == "rename_file",
             safetyReason: "explicit_user_confirmation_required",
             moveDestinationHint: nil,
+            moveDestinationKindHint: nil,
             renameTargetHint: nil,
             timerDurationHint: nil
         )

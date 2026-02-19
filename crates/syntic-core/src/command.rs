@@ -37,8 +37,32 @@ pub struct CommandIntent {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct CommandIntentArguments {
     pub move_destination: Option<String>,
+    pub move_destination_kind: Option<MoveDestinationKind>,
     pub rename_target: Option<String>,
     pub timer_duration: Option<String>,
+}
+
+/// Normalized destination kind for move operations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MoveDestinationKind {
+    Desktop,
+    Documents,
+    Downloads,
+    AbsolutePath,
+    Alias,
+}
+
+impl MoveDestinationKind {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Desktop => "desktop",
+            Self::Documents => "documents",
+            Self::Downloads => "downloads",
+            Self::AbsolutePath => "absolute_path",
+            Self::Alias => "alias",
+        }
+    }
 }
 
 impl CommandIntent {
@@ -98,6 +122,7 @@ pub fn fallback_classify(utterance: &str) -> CommandIntent {
             requires_confirmation: true,
             arguments: CommandIntentArguments {
                 move_destination: None,
+                move_destination_kind: None,
                 rename_target: None,
                 timer_duration: extract_timer_duration_token(utterance),
             },
@@ -118,13 +143,17 @@ pub fn fallback_classify(utterance: &str) -> CommandIntent {
         &normalized,
         &["verschieb", "move file", "move", "in den ordner"],
     ) {
+        let move_destination = extract_move_destination(utterance);
         return CommandIntent {
             kind: CommandIntentKind::MoveFile,
             summary: "Datei(en) verschieben".to_owned(),
             confidence_percent: 58,
             requires_confirmation: true,
             arguments: CommandIntentArguments {
-                move_destination: extract_move_destination(utterance),
+                move_destination: move_destination
+                    .as_ref()
+                    .map(|argument| argument.value.clone()),
+                move_destination_kind: move_destination.map(|argument| argument.kind),
                 rename_target: None,
                 timer_duration: None,
             },
@@ -142,6 +171,7 @@ pub fn fallback_classify(utterance: &str) -> CommandIntent {
             requires_confirmation: true,
             arguments: CommandIntentArguments {
                 move_destination: None,
+                move_destination_kind: None,
                 rename_target: extract_rename_target(utterance),
                 timer_duration: None,
             },
@@ -215,26 +245,81 @@ fn extract_timer_duration_token(utterance: &str) -> Option<String> {
         .map(|token| format!("{token}min"))
 }
 
-fn extract_move_destination(utterance: &str) -> Option<String> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MoveDestinationArgument {
+    value: String,
+    kind: MoveDestinationKind,
+}
+
+fn extract_move_destination(utterance: &str) -> Option<MoveDestinationArgument> {
     let normalized = utterance.trim().to_lowercase();
     if normalized.is_empty() {
         return None;
     }
 
     if let Some(value) = extract_tail_after_markers(&normalized, &[" to ", " nach "]) {
-        return sanitize_argument_token(&value);
+        if let Some(token) = sanitize_argument_token(&value) {
+            return classify_move_destination_token(&token);
+        }
     }
 
     if normalized.contains("desktop") {
-        return Some("desktop".to_owned());
+        return Some(MoveDestinationArgument {
+            value: "desktop".to_owned(),
+            kind: MoveDestinationKind::Desktop,
+        });
     }
     if normalized.contains("documents") || normalized.contains("dokumente") {
-        return Some("documents".to_owned());
+        return Some(MoveDestinationArgument {
+            value: "documents".to_owned(),
+            kind: MoveDestinationKind::Documents,
+        });
     }
     if normalized.contains("downloads") {
-        return Some("downloads".to_owned());
+        return Some(MoveDestinationArgument {
+            value: "downloads".to_owned(),
+            kind: MoveDestinationKind::Downloads,
+        });
     }
     None
+}
+
+fn classify_move_destination_token(token: &str) -> Option<MoveDestinationArgument> {
+    if token.is_empty() {
+        return None;
+    }
+
+    let normalized = token.to_lowercase();
+    if normalized == "desktop" {
+        return Some(MoveDestinationArgument {
+            value: "desktop".to_owned(),
+            kind: MoveDestinationKind::Desktop,
+        });
+    }
+    if normalized == "documents" || normalized == "dokumente" {
+        return Some(MoveDestinationArgument {
+            value: "documents".to_owned(),
+            kind: MoveDestinationKind::Documents,
+        });
+    }
+    if normalized == "downloads" {
+        return Some(MoveDestinationArgument {
+            value: "downloads".to_owned(),
+            kind: MoveDestinationKind::Downloads,
+        });
+    }
+
+    if token.starts_with('/') || token.starts_with("~/") {
+        return Some(MoveDestinationArgument {
+            value: token.to_owned(),
+            kind: MoveDestinationKind::AbsolutePath,
+        });
+    }
+
+    Some(MoveDestinationArgument {
+        value: token.to_owned(),
+        kind: MoveDestinationKind::Alias,
+    })
 }
 
 fn extract_rename_target(utterance: &str) -> Option<String> {
@@ -286,7 +371,10 @@ fn sanitize_argument_token(raw: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{CommandIntentKind, SafetyDecisionKind, evaluate_safety, fallback_classify};
+    use super::{
+        CommandIntentKind, MoveDestinationKind, SafetyDecisionKind, evaluate_safety,
+        fallback_classify,
+    };
 
     #[test]
     fn german_timer_command_is_detected() {
@@ -324,6 +412,10 @@ mod tests {
             intent.arguments.move_destination.as_deref(),
             Some("archive")
         );
+        assert_eq!(
+            intent.arguments.move_destination_kind,
+            Some(MoveDestinationKind::Alias)
+        );
         assert_eq!(decision.decision, SafetyDecisionKind::RequireConfirmation);
         assert!(decision.destructive);
     }
@@ -333,5 +425,19 @@ mod tests {
         let intent = fallback_classify("rename file report to final");
         assert_eq!(intent.kind, CommandIntentKind::RenameFile);
         assert_eq!(intent.arguments.rename_target.as_deref(), Some("final"));
+    }
+
+    #[test]
+    fn absolute_move_destination_is_classified_as_path() {
+        let intent = fallback_classify("move file report to /tmp/archive");
+        assert_eq!(intent.kind, CommandIntentKind::MoveFile);
+        assert_eq!(
+            intent.arguments.move_destination_kind,
+            Some(MoveDestinationKind::AbsolutePath)
+        );
+        assert_eq!(
+            intent.arguments.move_destination.as_deref(),
+            Some("/tmp/archive")
+        );
     }
 }

@@ -628,6 +628,7 @@ final class TechnicalE2EPipeline: ObservableObject {
                 destructive: safetyPayload.destructive,
                 safetyReason: safetyPayload.reason,
                 moveDestinationHint: intentPayload.arguments?.moveDestination,
+                moveDestinationKind: intentPayload.arguments?.moveDestinationKind,
                 renameTargetHint: intentPayload.arguments?.renameTarget,
                 timerDurationHint: intentPayload.arguments?.timerDuration
             )
@@ -690,6 +691,7 @@ final class TechnicalE2EPipeline: ObservableObject {
                             destructive: invocation.destructive,
                             safetyReason: invocation.safetyReason,
                             moveDestinationHint: invocation.moveDestinationHint,
+                            moveDestinationKindHint: invocation.moveDestinationKind,
                             renameTargetHint: invocation.renameTargetHint,
                             timerDurationHint: invocation.timerDurationHint
                         )
@@ -821,6 +823,7 @@ final class TechnicalE2EPipeline: ObservableObject {
                     safety_decision: $0.safetyDecision,
                     destructive: $0.destructive,
                     move_destination_hint: $0.moveDestinationHint,
+                    move_destination_kind_hint: $0.moveDestinationKind,
                     rename_target_hint: $0.renameTargetHint,
                     timer_duration_hint: $0.timerDurationHint
                 )
@@ -999,6 +1002,7 @@ private struct ToolInvocation {
     let destructive: Bool
     let safetyReason: String
     let moveDestinationHint: String?
+    let moveDestinationKind: String?
     let renameTargetHint: String?
     let timerDurationHint: String?
 }
@@ -1020,6 +1024,7 @@ private struct ToolInvocationSnapshot: Codable {
     let safety_decision: String
     let destructive: Bool
     let move_destination_hint: String?
+    let move_destination_kind_hint: String?
     let rename_target_hint: String?
     let timer_duration_hint: String?
 }
@@ -1111,11 +1116,13 @@ private struct CommandIntentPayload: Decodable {
 
 private struct CommandIntentArgumentsPayload: Decodable {
     let moveDestination: String?
+    let moveDestinationKind: String?
     let renameTarget: String?
     let timerDuration: String?
 
     enum CodingKeys: String, CodingKey {
         case moveDestination = "move_destination"
+        case moveDestinationKind = "move_destination_kind"
         case renameTarget = "rename_target"
         case timerDuration = "timer_duration"
     }
